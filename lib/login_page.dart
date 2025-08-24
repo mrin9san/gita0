@@ -17,12 +17,10 @@ class _LoginPageState extends State<LoginPage> {
     try {
       setState(() => _isSigningIn = true);
 
-      // Create GoogleSignIn instance with scopes
-      final GoogleSignIn googleSignIn = GoogleSignIn(
-        scopes: ['email'],
-      );
+      // Create GoogleSignIn instance
+      final GoogleSignIn googleSignIn = GoogleSignIn(scopes: ['email']);
 
-      // Start the sign-in flow
+      // Start sign-in flow
       final GoogleSignInAccount? googleUser = await googleSignIn.signIn();
       if (googleUser == null) {
         setState(() => _isSigningIn = false);
@@ -57,23 +55,39 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   Widget build(BuildContext context) {
+    // Get screen size for responsive layout
+    final media = MediaQuery.of(context).size;
+
     return Scaffold(
       body: Stack(
         fit: StackFit.expand,
         children: [
           // Background image
-          Image.asset('assets/golden_flower.png', fit: BoxFit.cover),
-          Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Image.asset('assets/logo.png', width: 400, height: 300),
-                const SizedBox(height: 40),
-                _isSigningIn
+          Image.asset('assets/background.png', fit: BoxFit.cover),
+          // Column aligned from top
+          Column(
+            children: [
+              SizedBox(height: media.height * 0.1), // 10% from top
+              Center(
+                child: Image.asset(
+                  'assets/logo.png',
+                  width: media.width * 0.4, // 50% of screen width
+                  height: media.height * 0.2, // 25% of screen height
+                  fit: BoxFit.contain,
+                ),
+              ),
+              SizedBox(height: media.height * 0.5), // spacing below logo
+              Center(
+                child: _isSigningIn
                     ? const CircularProgressIndicator()
                     : ElevatedButton.icon(
                         icon: const Icon(Icons.login),
                         label: const Text("Sign in with Google"),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 24, vertical: 12),
+                          textStyle: const TextStyle(fontSize: 18),
+                        ),
                         onPressed: () async {
                           final user = await _signInWithGoogle();
                           if (user != null && mounted) {
@@ -86,8 +100,8 @@ class _LoginPageState extends State<LoginPage> {
                           }
                         },
                       ),
-              ],
-            ),
+              ),
+            ],
           ),
         ],
       ),
