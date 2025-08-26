@@ -255,7 +255,7 @@ class _DashboardPageState extends State<DashboardPage> {
             ),
             const SizedBox(height: 10),
 
-            // ✅ Overflow-proof filters bar
+            // ✅ Overflow-proof filters bar (with Clear Date button)
             Padding(
               padding: const EdgeInsets.only(bottom: 10),
               child: Wrap(
@@ -309,26 +309,46 @@ class _DashboardPageState extends State<DashboardPage> {
                     ),
                   ),
 
-                  // Date Range Picker (shrinks, ellipsizes if needed)
-                  ConstrainedBox(
-                    constraints:
-                        const BoxConstraints(minWidth: 160, maxWidth: 280),
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF1A1C23),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 12),
+                  // Date Range Picker + Clear Button (shows ✖ only when selected)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ConstrainedBox(
+                        constraints:
+                            const BoxConstraints(minWidth: 160, maxWidth: 240),
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF1A1C23),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 12),
+                          ),
+                          onPressed: pickDateRange,
+                          icon:
+                              const Icon(Icons.date_range, color: Colors.white),
+                          label: Text(
+                            _dateLabel(),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            softWrap: false,
+                            style: const TextStyle(color: Colors.white),
+                          ),
+                        ),
                       ),
-                      onPressed: pickDateRange,
-                      icon: const Icon(Icons.date_range, color: Colors.white),
-                      label: Text(
-                        _dateLabel(),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        softWrap: false,
-                        style: const TextStyle(color: Colors.white),
-                      ),
-                    ),
+                      if (startDate != null && endDate != null) ...[
+                        const SizedBox(width: 8),
+                        IconButton(
+                          icon: const Icon(Icons.clear, color: Colors.white),
+                          tooltip: "Clear Date Filter",
+                          onPressed: () {
+                            setState(() {
+                              startDate = null;
+                              endDate = null;
+                              applyFilters();
+                            });
+                          },
+                        ),
+                      ],
+                    ],
                   ),
                 ],
               ),
@@ -374,11 +394,11 @@ class _DashboardPageState extends State<DashboardPage> {
       ),
       child: Column(
         children: [
-          Text(title,
-              style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold)),
+          Text(
+            title,
+            style: const TextStyle(
+                color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+          ),
           const SizedBox(height: 10),
           SizedBox(
             height: 150,
