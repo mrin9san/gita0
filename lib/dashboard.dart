@@ -19,8 +19,8 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> {
-  // Original Student Data
-  final List<Map<String, dynamic>> students = [
+  // Original Client Data
+  final List<Map<String, dynamic>> clients = [
     {
       'name': 'Roktim Konch',
       'membership': 'Premium',
@@ -103,8 +103,8 @@ class _DashboardPageState extends State<DashboardPage> {
     },
   ];
 
-  // Filtered Students
-  List<Map<String, dynamic>> filteredStudents = [];
+  // Filtered Clients
+  List<Map<String, dynamic>> filteredClients = [];
 
   // Filters
   String searchQuery = "";
@@ -116,23 +116,23 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   void initState() {
     super.initState();
-    filteredStudents = students;
+    filteredClients = clients;
   }
 
   // Apply filters together
   void applyFilters() {
     setState(() {
-      filteredStudents = students.where((student) {
+      filteredClients = clients.where((client) {
         final nameMatch =
-            student['name'].toLowerCase().contains(searchQuery.toLowerCase());
+            client['name'].toLowerCase().contains(searchQuery.toLowerCase());
 
         final feeMatch =
-            (feeFilter == "All" || student['feeStatus'] == feeFilter);
+            (feeFilter == "All" || client['feeStatus'] == feeFilter);
 
         final attendanceMatch = (attendanceFilter == "All" ||
-            student['attendance'] == attendanceFilter);
+            client['attendance'] == attendanceFilter);
 
-        final joinDate = DateTime.parse(student['joinDate']);
+        final joinDate = DateTime.parse(client['joinDate']);
         final dateMatch = (startDate == null && endDate == null) ||
             (startDate != null &&
                 endDate != null &&
@@ -178,12 +178,12 @@ class _DashboardPageState extends State<DashboardPage> {
   Widget build(BuildContext context) {
     // Pie Chart Data
     final paidCount =
-        filteredStudents.where((s) => s['feeStatus'] == 'Paid').length;
-    final unpaidCount = filteredStudents.length - paidCount;
+        filteredClients.where((s) => s['feeStatus'] == 'Paid').length;
+    final unpaidCount = filteredClients.length - paidCount;
 
     final presentCount =
-        filteredStudents.where((s) => s['attendance'] == 'Present').length;
-    final absentCount = filteredStudents.length - presentCount;
+        filteredClients.where((s) => s['attendance'] == 'Present').length;
+    final absentCount = filteredClients.length - presentCount;
 
     final paymentData = [
       ChartData('Paid', paidCount, Colors.green),
@@ -221,7 +221,7 @@ class _DashboardPageState extends State<DashboardPage> {
           ),
         ],
       ),
-      body: Padding(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -230,7 +230,7 @@ class _DashboardPageState extends State<DashboardPage> {
             Text('Location: ${widget.gymLocation}',
                 style: const TextStyle(color: Colors.white70, fontSize: 16)),
             const SizedBox(height: 8),
-            Text('Capacity: ${widget.gymCapacity} students',
+            Text('Capacity: ${widget.gymCapacity} clients',
                 style: const TextStyle(color: Colors.white70, fontSize: 16)),
             const SizedBox(height: 20),
 
@@ -255,104 +255,8 @@ class _DashboardPageState extends State<DashboardPage> {
             ),
             const SizedBox(height: 10),
 
-            // ✅ Overflow-proof filters bar (with Clear Date button)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: Wrap(
-                spacing: 16,
-                runSpacing: 8,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  // Fee Filter
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1A1C23),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: DropdownButton<String>(
-                      value: feeFilter,
-                      dropdownColor: const Color(0xFF1A1C23),
-                      style: const TextStyle(color: Colors.white),
-                      underline: const SizedBox.shrink(),
-                      items: ["All", "Paid", "Unpaid"]
-                          .map(
-                              (e) => DropdownMenuItem(value: e, child: Text(e)))
-                          .toList(),
-                      onChanged: (value) {
-                        feeFilter = value!;
-                        applyFilters();
-                      },
-                    ),
-                  ),
-
-                  // Attendance Filter
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1A1C23),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: DropdownButton<String>(
-                      value: attendanceFilter,
-                      dropdownColor: const Color(0xFF1A1C23),
-                      style: const TextStyle(color: Colors.white),
-                      underline: const SizedBox.shrink(),
-                      items: ["All", "Present", "Absent"]
-                          .map(
-                              (e) => DropdownMenuItem(value: e, child: Text(e)))
-                          .toList(),
-                      onChanged: (value) {
-                        attendanceFilter = value!;
-                        applyFilters();
-                      },
-                    ),
-                  ),
-
-                  // Date Range Picker + Clear Button (shows ✖ only when selected)
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      ConstrainedBox(
-                        constraints:
-                            const BoxConstraints(minWidth: 160, maxWidth: 240),
-                        child: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF1A1C23),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 12),
-                          ),
-                          onPressed: pickDateRange,
-                          icon:
-                              const Icon(Icons.date_range, color: Colors.white),
-                          label: Text(
-                            _dateLabel(),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            softWrap: false,
-                            style: const TextStyle(color: Colors.white),
-                          ),
-                        ),
-                      ),
-                      if (startDate != null && endDate != null) ...[
-                        const SizedBox(width: 8),
-                        IconButton(
-                          icon: const Icon(Icons.clear, color: Colors.white),
-                          tooltip: "Clear Date Filter",
-                          onPressed: () {
-                            setState(() {
-                              startDate = null;
-                              endDate = null;
-                              applyFilters();
-                            });
-                          },
-                        ),
-                      ],
-                    ],
-                  ),
-                ],
-              ),
-            ),
+            // ✅ Filters
+            _buildFilters(),
 
             const SizedBox(height: 10),
 
@@ -368,7 +272,7 @@ class _DashboardPageState extends State<DashboardPage> {
             const SizedBox(height: 20),
 
             const Text(
-              "Student Information",
+              "Client Information",
               style: TextStyle(
                   color: Colors.white,
                   fontSize: 18,
@@ -376,9 +280,110 @@ class _DashboardPageState extends State<DashboardPage> {
             ),
             const SizedBox(height: 10),
 
-            Expanded(child: _buildStudentTable()),
+            // Fixed-height table area with its own scrolling
+            SizedBox(
+              height: 400, // adjust as you like
+              child: _buildClientTable(),
+            ),
           ],
         ),
+      ),
+    );
+  }
+
+  // Filters as a helper widget
+  Widget _buildFilters() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Wrap(
+        spacing: 16,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          // Fee Filter
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1C23),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: DropdownButton<String>(
+              value: feeFilter,
+              dropdownColor: const Color(0xFF1A1C23),
+              style: const TextStyle(color: Colors.white),
+              underline: const SizedBox.shrink(),
+              items: ["All", "Paid", "Unpaid"]
+                  .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                  .toList(),
+              onChanged: (value) {
+                feeFilter = value!;
+                applyFilters();
+              },
+            ),
+          ),
+
+          // Attendance Filter
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1C23),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: DropdownButton<String>(
+              value: attendanceFilter,
+              dropdownColor: const Color(0xFF1A1C23),
+              style: const TextStyle(color: Colors.white),
+              underline: const SizedBox.shrink(),
+              items: ["All", "Present", "Absent"]
+                  .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                  .toList(),
+              onChanged: (value) {
+                attendanceFilter = value!;
+                applyFilters();
+              },
+            ),
+          ),
+
+          // Date Range Picker + Clear Button
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ConstrainedBox(
+                constraints: const BoxConstraints(minWidth: 160, maxWidth: 240),
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF1A1C23),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 12),
+                  ),
+                  onPressed: pickDateRange,
+                  icon: const Icon(Icons.date_range, color: Colors.white),
+                  label: Text(
+                    _dateLabel(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    softWrap: false,
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                ),
+              ),
+              if (startDate != null && endDate != null) ...[
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.clear, color: Colors.white),
+                  tooltip: "Clear Date Filter",
+                  onPressed: () {
+                    setState(() {
+                      startDate = null;
+                      endDate = null;
+                      applyFilters();
+                    });
+                  },
+                ),
+              ],
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -427,8 +432,8 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
-  // Build Student Table
-  Widget _buildStudentTable() {
+  // Build Client Table
+  Widget _buildClientTable() {
     final columns = [
       'Name',
       'Membership',
@@ -443,64 +448,67 @@ class _DashboardPageState extends State<DashboardPage> {
         color: const Color(0xFF1A1C23),
         borderRadius: BorderRadius.circular(12),
       ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.vertical,
+      child: Scrollbar(
+        thumbVisibility: true,
         child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: DataTable(
-            columns: columns
-                .map(
-                  (column) => DataColumn(
-                    label: Text(
-                      column,
-                      style: const TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                )
-                .toList(),
-            rows: filteredStudents.map((student) {
-              return DataRow(
-                cells: [
-                  DataCell(
-                    Text(student['name'],
-                        style: const TextStyle(color: Colors.white70)),
-                  ),
-                  DataCell(
-                    Text(student['membership'],
-                        style: const TextStyle(color: Colors.white70)),
-                  ),
-                  DataCell(
-                    Text(student['joinDate'],
-                        style: const TextStyle(color: Colors.white70)),
-                  ),
-                  DataCell(
-                    Text(
-                      student['feeStatus'],
-                      style: TextStyle(
-                        color: student['feeStatus'] == 'Paid'
-                            ? Colors.green
-                            : Colors.red,
+          scrollDirection: Axis.vertical,
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: DataTable(
+              columns: columns
+                  .map(
+                    (column) => DataColumn(
+                      label: Text(
+                        column,
+                        style: const TextStyle(
+                            color: Colors.white, fontWeight: FontWeight.bold),
                       ),
                     ),
-                  ),
-                  DataCell(
-                    Text(
-                      student['attendance'],
-                      style: TextStyle(
-                        color: student['attendance'] == 'Present'
-                            ? Colors.blue
-                            : Colors.orange,
+                  )
+                  .toList(),
+              rows: filteredClients.map((client) {
+                return DataRow(
+                  cells: [
+                    DataCell(
+                      Text(client['name'],
+                          style: const TextStyle(color: Colors.white70)),
+                    ),
+                    DataCell(
+                      Text(client['membership'],
+                          style: const TextStyle(color: Colors.white70)),
+                    ),
+                    DataCell(
+                      Text(client['joinDate'],
+                          style: const TextStyle(color: Colors.white70)),
+                    ),
+                    DataCell(
+                      Text(
+                        client['feeStatus'],
+                        style: TextStyle(
+                          color: client['feeStatus'] == 'Paid'
+                              ? Colors.green
+                              : Colors.red,
+                        ),
                       ),
                     ),
-                  ),
-                  DataCell(
-                    Text(student['phone'],
-                        style: const TextStyle(color: Colors.white70)),
-                  ),
-                ],
-              );
-            }).toList(),
+                    DataCell(
+                      Text(
+                        client['attendance'],
+                        style: TextStyle(
+                          color: client['attendance'] == 'Present'
+                              ? Colors.blue
+                              : Colors.orange,
+                        ),
+                      ),
+                    ),
+                    DataCell(
+                      Text(client['phone'],
+                          style: const TextStyle(color: Colors.white70)),
+                    ),
+                  ],
+                );
+              }).toList(),
+            ),
           ),
         ),
       ),
@@ -543,8 +551,13 @@ class PieChartPainter extends CustomPainter {
     for (final item in data) {
       final sweepAngle = 2 * pi * (item.y / total);
       paint.color = item.color;
-      canvas.drawArc(Rect.fromCircle(center: center, radius: radius),
-          startAngle, sweepAngle, true, paint);
+      canvas.drawArc(
+        Rect.fromCircle(center: center, radius: radius),
+        startAngle,
+        sweepAngle,
+        true,
+        paint,
+      );
       startAngle += sweepAngle;
     }
 
