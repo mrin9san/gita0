@@ -453,8 +453,8 @@ class _DashboardPageState extends State<DashboardPage>
                           if (firstCat != null || secondCat != null)
                             const SizedBox(height: 20),
 
-                          const Text(
-                            "Users (this gym only)",
+                          Text(
+                            "Users (${widget.gymName})",
                             style: TextStyle(
                                 color: Colors.white,
                                 fontSize: 18,

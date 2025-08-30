@@ -653,39 +653,57 @@ class _HomePageState extends State<HomePage> {
                                 return Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    const Row(
+                                    // HEADER ROW with "View" button (eye icon) at top-right
+                                    Row(
                                       children: [
-                                        Icon(Icons.fitness_center,
+                                        const Icon(Icons.fitness_center,
                                             color: Color(0xFF4F9CF9), size: 16),
-                                        SizedBox(width: 4),
-                                        Text(
+                                        const SizedBox(width: 4),
+                                        const Text(
                                           "Gym",
                                           style: TextStyle(
-                                              color: Colors.white70,
-                                              fontSize: 12,
-                                              letterSpacing: 0.6),
+                                            color: Colors.white70,
+                                            fontSize: 12,
+                                            letterSpacing: 0.6,
+                                          ),
+                                        ),
+                                        const Spacer(),
+                                        TextButton.icon(
+                                          onPressed: () =>
+                                              _navigateToDashboard(gym),
+                                          icon: const Icon(Icons.visibility,
+                                              size: 18),
+                                          label: const Text('View'),
+                                          style: TextButton.styleFrom(
+                                            foregroundColor: Colors.white,
+                                            textStyle: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 8, vertical: 4),
+                                            minimumSize: Size.zero,
+                                            tapTargetSize: MaterialTapTargetSize
+                                                .shrinkWrap,
+                                          ),
                                         ),
                                       ],
                                     ),
                                     const SizedBox(height: 8),
+
+                                    // CONTENT
                                     Expanded(
                                       child: SingleChildScrollView(
                                         child: Column(
                                           crossAxisAlignment:
                                               CrossAxisAlignment.start,
                                           children: [
-                                            GestureDetector(
-                                              onTap: () =>
-                                                  _navigateToDashboard(gym),
-                                              child: Text(
-                                                gym['name'] ?? '',
-                                                style: const TextStyle(
-                                                  fontSize: 16,
-                                                  fontWeight: FontWeight.bold,
-                                                  color: Colors.white,
-                                                  decoration:
-                                                      TextDecoration.underline,
-                                                ),
+                                            // Gym name now plain text (not clickable)
+                                            Text(
+                                              gym['name'] ?? '',
+                                              style: const TextStyle(
+                                                fontSize: 16,
+                                                fontWeight: FontWeight.bold,
+                                                color: Colors.white,
                                               ),
                                             ),
                                             const SizedBox(height: 8),
@@ -695,7 +713,7 @@ class _HomePageState extends State<HomePage> {
                                                 fontSize: 12,
                                                 fontWeight: FontWeight.bold,
                                                 color: Colors.white
-                                                    .withOpacity(0.7),
+                                                    .withValues(alpha: 0.7),
                                               ),
                                             ),
                                             Text(
@@ -718,6 +736,8 @@ class _HomePageState extends State<HomePage> {
                                       ),
                                     ),
                                     const SizedBox(height: 8),
+
+                                    // ACTIONS
                                     Row(
                                       mainAxisAlignment: MainAxisAlignment.end,
                                       children: [
@@ -819,12 +839,12 @@ class _HomePageState extends State<HomePage> {
       style: const TextStyle(color: Colors.white),
       dropdownColor: const Color(0xFF111214),
       iconEnabledColor: Colors.white70,
-      decoration: InputDecoration(
-        labelText: label,
-        labelStyle: const TextStyle(color: Colors.white70),
-        enabledBorder: const OutlineInputBorder(
+      decoration: const InputDecoration(
+        labelText: 'Select',
+        labelStyle: TextStyle(color: Colors.white70),
+        enabledBorder: OutlineInputBorder(
             borderSide: BorderSide(color: Color(0xFF2A2F3A))),
-        focusedBorder: const OutlineInputBorder(
+        focusedBorder: OutlineInputBorder(
             borderSide: BorderSide(color: Color(0xFF4F9CF9))),
       ),
     );
