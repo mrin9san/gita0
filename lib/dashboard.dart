@@ -325,13 +325,19 @@ class _DashboardPageState extends State<DashboardPage>
       appBar: AppBar(
         backgroundColor: const Color(0xFF0D0E11),
         elevation: 0,
-        title: Text('${widget.gymName} - Dashboard'),
-        leading: Container(),
+        title: const SizedBox.shrink(),
+        iconTheme:
+            const IconThemeData(color: Colors.white), // all appbar icons bright
+        leading: IconButton(
+          tooltip: 'Home',
+          onPressed: () => Navigator.of(context).pop(),
+          icon: const Icon(Icons.home_outlined, color: Colors.white, size: 26),
+        ),
         actions: [
           IconButton(
             tooltip: 'Reload',
             onPressed: _fetchUsers,
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh, color: Colors.white),
           ),
           const SizedBox(width: 8),
         ],
@@ -353,6 +359,10 @@ class _DashboardPageState extends State<DashboardPage>
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          // Sleek glossy label for title, left-aligned above search
+                          GlassLabel(text: '${widget.gymName} • Dashboard'),
+                          const SizedBox(height: 10),
+
                           // Search
                           TextField(
                             style: const TextStyle(color: Colors.white),
@@ -455,7 +465,7 @@ class _DashboardPageState extends State<DashboardPage>
 
                           Text(
                             "Users (${widget.gymName})",
-                            style: TextStyle(
+                            style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold),
@@ -557,6 +567,59 @@ class ChartData {
   final int y;
   final Color color;
   ChartData(this.x, this.y, this.color);
+}
+
+/// A tiny frosted glass label for page headings
+class GlassLabel extends StatelessWidget {
+  final String text;
+  const GlassLabel({super.key, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Color(0x33FFFFFF),
+                  Color(0x1AFFFFFF),
+                ],
+              ),
+              border: Border.all(
+                color: const Color(0xFFFFFFFF).withValues(alpha: 0.25),
+                width: 1,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF000000).withValues(alpha: 0.35),
+                  blurRadius: 12,
+                  offset: const Offset(0, 6),
+                ),
+              ],
+            ),
+            child: Text(
+              text,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13.5, // sleek, not too big
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.2,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// A frosted glass card that renders a glossy donut chart + legend
