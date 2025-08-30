@@ -24,7 +24,7 @@ class _ProfilePageState extends State<ProfilePage> {
     super.initState();
     if (user != null) {
       _nameController.text = user!.displayName ?? "";
-      _locationController.text = ""; // You can load saved location from DB
+      _locationController.text = ""; // TODO: load from DB if you like
     }
   }
 
@@ -34,19 +34,16 @@ class _ProfilePageState extends State<ProfilePage> {
       setState(() {
         _imageFile = File(picked.path);
       });
-      // TODO: Upload image to storage & update user.photoURL
+      // TODO: Upload to storage & update user.photoURL
     }
   }
 
   Future<void> _saveProfile() async {
     if (user != null) {
       await user!.updateDisplayName(_nameController.text);
-      // TODO: Save location to Firestore/RealtimeDB if needed
-      // TODO: Upload profile picture and call user.updatePhotoURL(url)
+      // TODO: Persist location & photo to your DB / storage
 
-      setState(() {
-        isEditing = false;
-      });
+      setState(() => isEditing = false);
     }
   }
 
@@ -67,6 +64,7 @@ class _ProfilePageState extends State<ProfilePage> {
             icon: const Icon(Icons.logout),
             onPressed: () async {
               await FirebaseAuth.instance.signOut();
+              if (!mounted) return;
               Navigator.popUntil(context, (route) => route.isFirst);
             },
           )
@@ -76,7 +74,6 @@ class _ProfilePageState extends State<ProfilePage> {
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            // Profile Picture
             Center(
               child: Stack(
                 children: [
@@ -108,20 +105,11 @@ class _ProfilePageState extends State<ProfilePage> {
               ),
             ),
             const SizedBox(height: 16),
-
-            // Name
             _infoField("Name", _nameController, editable: true),
-
-            // Email (read-only)
             _infoField("Email", TextEditingController(text: user!.email ?? ""),
                 editable: false),
-
-            // Location
             _infoField("Location", _locationController, editable: true),
-
             const SizedBox(height: 20),
-
-            // Edit / Save Button
             ElevatedButton.icon(
               icon: Icon(isEditing ? Icons.save : Icons.edit),
               label: Text(isEditing ? "Save" : "Edit Profile"),
@@ -129,9 +117,7 @@ class _ProfilePageState extends State<ProfilePage> {
                 if (isEditing) {
                   _saveProfile();
                 } else {
-                  setState(() {
-                    isEditing = true;
-                  });
+                  setState(() => isEditing = true);
                 }
               },
             ),
@@ -149,9 +135,7 @@ class _ProfilePageState extends State<ProfilePage> {
         controller: controller,
         enabled: editable && isEditing,
         decoration: InputDecoration(
-          labelText: label,
-          border: const OutlineInputBorder(),
-        ),
+            labelText: label, border: const OutlineInputBorder()),
       ),
     );
   }
