@@ -1,9 +1,7 @@
 import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:supabase_flutter/supabase_flutter.dart' as supa
-    show Supabase, OAuthProvider;
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -15,72 +13,50 @@ class LoginPage extends StatefulWidget {
 class _LoginPageState extends State<LoginPage> {
   bool isLoading = false;
 
-  Future<void> _saveUserToSupabase(User user) async {
-    final client = supa.Supabase.instance.client;
-
-    final email = user.email;
-    if (email == null || email.isEmpty) {
-      throw Exception('Firebase user has no email. Cannot insert into "Fire".');
-    }
-
-    final existing = await client
-        .from('Fire')
-        .select('FireBaseID, EmailID')
-        .eq('EmailID', email)
-        .maybeSingle();
-
-    if (existing != null) return;
-
-    await client
-        .from('Fire')
-        .insert({
-          'Name': user.displayName ?? 'User',
-          'EmailID': email,
-          'Location': 'Unknown'
-        })
-        .select('FireBaseID')
-        .single();
-  }
-
-  Future<void> _signInWithGoogle() async {
+  Future<void> _signInWithGoogleNative() async {
     setState(() => isLoading = true);
     try {
-      final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
-      if (googleUser == null) {
-        if (!mounted) return;
+      final google = GoogleSignIn(
+        scopes: ['email', 'profile'],
+        // IMPORTANT:
+        // iOS -> set your iOS clientId:
+        // clientId: 'YOUR_IOS_CLIENT_ID.apps.googleusercontent.com',
+        // Android -> to reliably get idToken, set your Web client id:
+        // serverClientId: 'YOUR_WEB_CLIENT_ID.apps.googleusercontent.com',
+      );
+
+      // Optional: ensure we don’t auto reuse a cached account
+      // await google.signOut();
+
+      final acct = await google.signIn();
+      if (acct == null) {
         setState(() => isLoading = false);
         return;
       }
 
-      final googleAuth = await googleUser.authentication;
+      final gAuth = await acct.authentication;
+      final idToken = gAuth.idToken;
+      if (idToken == null) {
+        throw Exception('Google idToken is null. Set serverClientId/clientId.');
+      }
 
-      // Firebase sign-in
-      final credential = GoogleAuthProvider.credential(
-        accessToken: googleAuth.accessToken,
-        idToken: googleAuth.idToken,
-      );
-      final userCred =
-          await FirebaseAuth.instance.signInWithCredential(credential);
-
-      // ✅ Supabase session from the same Google ID token (enables RLS)
       await supa.Supabase.instance.client.auth.signInWithIdToken(
         provider: supa.OAuthProvider.google,
-        idToken: googleAuth.idToken!, // required
-        accessToken: googleAuth.accessToken, // recommended on Android
+        idToken: idToken,
+        accessToken: gAuth.accessToken, // recommended on Android
       );
 
-      // Upsert Fire row
-      await _saveUserToSupabase(userCred.user!);
-
+      // AuthWrapper will detect the session and route to HomePage.
       if (!mounted) return;
-      setState(() => isLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Signed in & synced to Supabase ✅')));
+        const SnackBar(content: Text('Signed in ✅')),
+      );
     } catch (e) {
       if (!mounted) return;
-      setState(() => isLoading = false);
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('Login error: $e')));
+    } finally {
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
@@ -126,7 +102,7 @@ class _LoginPageState extends State<LoginPage> {
                             shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(30)),
                           ),
-                          onPressed: _signInWithGoogle,
+                          onPressed: _signInWithGoogleNative,
                         ),
                       ],
                     ),

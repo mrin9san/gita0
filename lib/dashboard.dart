@@ -5,6 +5,9 @@ import 'package:intl/intl.dart';
 // Import ONLY Supabase class to avoid pulling in its User type
 import 'package:supabase_flutter/supabase_flutter.dart' as supa show Supabase;
 
+// <-- add this import so we can navigate to user view
+import 'user_view_page.dart';
+
 class DashboardPage extends StatefulWidget {
   final String gymName;
   final String gymLocation;
@@ -359,8 +362,37 @@ class _DashboardPageState extends State<DashboardPage>
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // Sleek glossy label for title, left-aligned above search
-                          GlassLabel(text: '${widget.gymName} • Dashboard'),
+                          // ======= NEW: Two glossy tab-buttons (Dashboard / User view) =======
+                          Row(
+                            children: [
+                              GlassLabelButton(
+                                text: '${widget.gymName} • Dashboard',
+                                active: true, // current page
+                                onTap: () {
+                                  // we're already here; you can also refresh:
+                                  _fetchUsers();
+                                },
+                              ),
+                              const SizedBox(width: 8),
+                              GlassLabelButton(
+                                text: '${widget.gymName} • User view mode',
+                                active: false,
+                                onTap: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => UserViewPage(
+                                        gymName: widget.gymName,
+                                        gymLocation: widget.gymLocation,
+                                        gymCapacity: widget.gymCapacity,
+                                        gymId: _gymId,
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ],
+                          ),
                           const SizedBox(height: 10),
 
                           // Search
@@ -569,15 +601,26 @@ class ChartData {
   ChartData(this.x, this.y, this.color);
 }
 
-/// A tiny frosted glass label for page headings
-class GlassLabel extends StatelessWidget {
+/// ======= NEW: Clickable glossy label button (used as tabs) =======
+class GlassLabelButton extends StatelessWidget {
   final String text;
-  const GlassLabel({super.key, required this.text});
+  final VoidCallback? onTap;
+  final bool active;
+  const GlassLabelButton({
+    super.key,
+    required this.text,
+    this.onTap,
+    this.active = false,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.centerLeft,
+    final borderAlpha = active ? 0.35 : 0.18;
+    final textColor =
+        active ? Colors.white : Colors.white.withValues(alpha: 0.8);
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: onTap,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(12),
         child: BackdropFilter(
@@ -595,7 +638,7 @@ class GlassLabel extends StatelessWidget {
                 ],
               ),
               border: Border.all(
-                color: const Color(0xFFFFFFFF).withValues(alpha: 0.25),
+                color: const Color(0xFFFFFFFF).withValues(alpha: borderAlpha),
                 width: 1,
               ),
               boxShadow: [
@@ -608,9 +651,9 @@ class GlassLabel extends StatelessWidget {
             ),
             child: Text(
               text,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 13.5, // sleek, not too big
+              style: TextStyle(
+                color: textColor,
+                fontSize: 13.5,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0.2,
               ),

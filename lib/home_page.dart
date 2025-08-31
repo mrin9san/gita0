@@ -1,18 +1,19 @@
+import 'dart:async';
+import 'dart:io' show File;
 import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart' as fb;
-import 'package:google_sign_in/google_sign_in.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:image_picker/image_picker.dart';
 
 import 'profile_page.dart';
 import 'dashboard.dart';
 
 class HomePage extends StatefulWidget {
-  final fb.User user;
-  final String fireBaseId; // Fire.FireBaseID from login
+  final String fireBaseId; // stable key from Fire table
 
-  const HomePage({super.key, required this.user, required this.fireBaseId});
+  const HomePage({super.key, required this.fireBaseId});
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -27,83 +28,146 @@ class _HomePageState extends State<HomePage> {
   late Box gymsBox;
   List<Map<String, dynamic>> userGyms = [];
 
+  supa.User? _user;
+  StreamSubscription<List<Map<String, dynamic>>>? _gymsSub;
+
+  String? _loadError;
+
   @override
   void initState() {
     super.initState();
     gymsBox = Hive.box('gymsBox');
-    _loadGyms();
+    _user = supa.Supabase.instance.client.auth.currentUser;
+
+    // 1) Show cached quickly
+    _loadGymsLocal();
+    // 2) Live subscribe to server (authoritative)
+    _subscribeGyms();
   }
 
-  void _loadGyms() {
-    final List stored = gymsBox.get(widget.user.uid, defaultValue: []);
+  @override
+  void dispose() {
+    _gymsSub?.cancel();
+    super.dispose();
+  }
+
+  // ---------- Data coordination ----------
+
+  void _loadGymsLocal() {
+    final key = widget.fireBaseId;
+    final List stored = gymsBox.get(key, defaultValue: []);
     userGyms = stored
         .map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e as Map))
         .toList();
+    setState(() {}); // show cache immediately
   }
 
-  Future<void> _ensureSupabaseSession() async {
-    final client = Supabase.instance.client;
-    if (client.auth.currentSession != null) return;
+  void _subscribeGyms() {
+    final client = supa.Supabase.instance.client;
 
-    final silent = await GoogleSignIn().signInSilently();
-    if (silent == null) return;
-    final gAuth = await silent.authentication;
-    final idToken = gAuth.idToken;
-    if (idToken == null) return;
+    _gymsSub = client
+        .from('Gyms')
+        .stream(primaryKey: ['GymID'])
+        .eq('FireBaseID', widget.fireBaseId)
+        // .order('created_at', ascending: true) // optional; can omit on streams
+        .listen((rows) {
+          // Normalize server rows into UI/Hive shape
+          final normalized = rows.map<Map<String, dynamic>>((r) {
+            return {
+              'GymID': r['GymID'],
+              'name': r['GymName'],
+              'location': r['Location'],
+              'capacity': r['Capacity'] ?? 0,
+            };
+          }).toList();
 
-    await client.auth.signInWithIdToken(
-      provider: OAuthProvider.google,
-      idToken: idToken,
-      accessToken: gAuth.accessToken,
-    );
+          setState(() {
+            _loadError = null;
+            userGyms = normalized;
+          });
+          // Overwrite cache with server truth
+          gymsBox.put(widget.fireBaseId, userGyms);
+        }, onError: (e) {
+          setState(() {
+            _loadError = 'Realtime error: $e';
+          });
+        });
   }
 
   Future<void> _saveGym({int? index}) async {
-    if (_formKey.currentState!.validate()) {
-      final gymData = <String, dynamic>{
-        'name': _gymNameController.text.trim(),
-        'location': _gymLocationController.text.trim(),
-        'capacity': int.tryParse(_gymCapacityController.text.trim()) ?? 0,
-      };
+    if (!_formKey.currentState!.validate()) return;
 
-      try {
-        await _ensureSupabaseSession();
+    final name = _gymNameController.text.trim();
+    final loc = _gymLocationController.text.trim();
+    final cap = int.tryParse(_gymCapacityController.text.trim()) ?? 0;
 
-        final response = await Supabase.instance.client
+    try {
+      String? gymId;
+
+      // EDIT path: if we have an index with a GymID -> UPDATE
+      if (index != null) {
+        final dynamic existingId = userGyms[index]['GymID'];
+        if (existingId is String && existingId.isNotEmpty) {
+          gymId = existingId;
+
+          await supa.Supabase.instance.client
+              .from('Gyms')
+              .update({
+                'GymName': name,
+                'Location': loc,
+                'Capacity': cap,
+              })
+              .eq('GymID', gymId)
+              .select('GymID')
+              .single();
+
+          // ✅ Optimistic UI update
+          userGyms[index] = {
+            ...userGyms[index],
+            'name': name,
+            'location': loc,
+            'capacity': cap,
+          };
+          gymsBox.put(widget.fireBaseId, userGyms);
+          setState(() {});
+        }
+      }
+
+      // ADD path: no GymID -> INSERT
+      if (gymId == null) {
+        final inserted = await supa.Supabase.instance.client
             .from('Gyms')
             .insert({
-              'GymName': gymData['name'],
-              'Location': gymData['location'],
-              'Capacity': gymData['capacity'],
+              'GymName': name,
+              'Location': loc,
+              'Capacity': cap,
               'FireBaseID': widget.fireBaseId,
             })
-            .select()
+            .select('GymID,GymName,Location,Capacity')
             .single();
 
-        if (response != null) {
-          gymData['GymID'] = response['GymID'];
-        }
-
-        if (index == null) {
-          userGyms.add(gymData);
-        } else {
-          userGyms[index] = gymData;
-        }
-        gymsBox.put(widget.user.uid, userGyms);
-
-        _gymNameController.clear();
-        _gymLocationController.clear();
-        _gymCapacityController.clear();
-
+        // ✅ Optimistic append
+        userGyms.add({
+          'GymID': inserted['GymID'],
+          'name': inserted['GymName'],
+          'location': inserted['Location'],
+          'capacity': inserted['Capacity'] ?? 0,
+        });
+        gymsBox.put(widget.fireBaseId, userGyms);
         setState(() {});
-        if (mounted) Navigator.of(context).pop();
-      } catch (e) {
-        debugPrint("❌ Supabase insert failed: $e");
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Failed to save gym in Supabase: $e")),
-          );
-        }
+      }
+
+      // Clear form & close dialog; stream will reconcile later if needed
+      _gymNameController.clear();
+      _gymLocationController.clear();
+      _gymCapacityController.clear();
+      if (mounted) Navigator.of(context).pop();
+    } catch (e) {
+      debugPrint("❌ Supabase save failed: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Failed to save gym in Supabase: $e")),
+        );
       }
     }
   }
@@ -165,8 +229,9 @@ class _HomePageState extends State<HomePage> {
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF2A2F3A),
-                foregroundColor: Colors.white),
+              backgroundColor: const Color(0xFF2A2F3A),
+              foregroundColor: Colors.white,
+            ),
             onPressed: () => _saveGym(index: index),
             child: Text(index == null ? 'Add' : 'Update'),
           ),
@@ -175,21 +240,46 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  void _deleteGym(int index) {
-    userGyms.removeAt(index);
-    gymsBox.put(widget.user.uid, userGyms);
-    setState(() {});
+  Future<void> _deleteGym(int index) async {
+    final dynamic gymId = userGyms[index]['GymID'];
+    if (gymId == null || gymId.toString().isEmpty) {
+      // If no server id, just remove local (rare with streams)
+      userGyms.removeAt(index);
+      gymsBox.put(widget.fireBaseId, userGyms);
+      setState(() {});
+      return;
+    }
+
+    try {
+      await supa.Supabase.instance.client
+          .from('Gyms')
+          .delete()
+          .eq('GymID', gymId);
+      // Stream will update UI when delete event arrives
+    } catch (e) {
+      debugPrint('❌ Failed to delete on server: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to delete on server: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _logout() async {
-    await fb.FirebaseAuth.instance.signOut();
     try {
-      await GoogleSignIn().signOut();
+      await supa.Supabase.instance.client.auth.signOut();
     } catch (_) {}
 
     try {
-      await Supabase.instance.client.auth.signOut();
+      final google = GoogleSignIn();
+      await google.disconnect();
+      await google.signOut();
     } catch (_) {}
+
+    if (mounted) {
+      Navigator.of(context).popUntil((r) => r.isFirst);
+    }
   }
 
   void _navigateToDashboard(Map<String, dynamic> gym) {
@@ -211,14 +301,11 @@ class _HomePageState extends State<HomePage> {
     final dynamic existing = gym['GymID'];
     if (existing is String && existing.isNotEmpty) return existing;
 
-    await _ensureSupabaseSession();
-
     final name = (gym['name'] ?? '').toString();
     final loc = (gym['location'] ?? '').toString();
-
     if (name.isEmpty) return null;
 
-    final rows = await Supabase.instance.client
+    final List<dynamic> rows = await supa.Supabase.instance.client
         .from('Gyms')
         .select('GymID')
         .eq('FireBaseID', widget.fireBaseId)
@@ -227,22 +314,22 @@ class _HomePageState extends State<HomePage> {
         .order('created_at', ascending: false)
         .limit(1);
 
-    if (rows is List && rows.isNotEmpty) {
+    if (rows.isNotEmpty) {
       final id = rows.first['GymID'] as String?;
       if (id != null && id.isNotEmpty) {
         gym['GymID'] = id;
-        gymsBox.put(widget.user.uid, userGyms);
+        gymsBox.put(widget.fireBaseId, userGyms);
         return id;
       }
     }
     return null;
   }
 
-  // ======= NEW: Add Customer dialog with auto-BMI + dropdowns + scroll =======
+  // ======= Add Customer dialog (with photo pick/camera + upload) =======
   void _showAddCustomerForm(Map<String, dynamic> gym) async {
     final formKey = GlobalKey<FormState>();
 
-    // Controllers in the EXACT order requested
+    // Controllers
     final nameC = TextEditingController();
     final ageC = TextEditingController();
     final addressC = TextEditingController();
@@ -253,10 +340,9 @@ class _HomePageState extends State<HomePage> {
     final healthHistoryC = TextEditingController();
     final supplementHistoryC = TextEditingController();
     final heightC = TextEditingController();
-    final membershipC =
-        TextEditingController(); // kept for payload, but we’ll use dropdown value
-    final exercizeTypeC = TextEditingController(); // ditto
-    final sexC = TextEditingController(); // ditto
+    final membershipC = TextEditingController();
+    final exercizeTypeC = TextEditingController();
+    final sexC = TextEditingController();
     final emailC = TextEditingController();
     final joinDateC = TextEditingController();
     final phoneC = TextEditingController();
@@ -266,13 +352,17 @@ class _HomePageState extends State<HomePage> {
     String? membershipValue;
     String? exerciseValue;
 
-    // Auto-calc BMI from Weight(kg) and Height(cm)
+    // Photo state
+    final picker = ImagePicker();
+    File? photoFile;
+
+    // Auto-calc BMI
     void recalcBmi() {
-      final w = int.tryParse(weightC.text.trim()); // kg
-      final hCm = int.tryParse(heightC.text.trim()); // cm
+      final w = int.tryParse(weightC.text.trim());
+      final hCm = int.tryParse(heightC.text.trim());
       if (w != null && hCm != null && hCm > 0) {
         final h = hCm / 100.0;
-        final bmi = (w / (h * h)).round(); // integer BMI
+        final bmi = (w / (h * h)).round();
         bmiC.text = bmi.toString();
       } else {
         bmiC.text = '';
@@ -280,7 +370,7 @@ class _HomePageState extends State<HomePage> {
     }
 
     DateTime? pickedJoin;
-    Future<void> pickJoinDate() async {
+    Future<void> pickJoinDate(BuildContext context) async {
       final now = DateTime.now();
       final first = DateTime(now.year - 5, 1, 1);
       final last = DateTime(now.year + 5, 12, 31);
@@ -292,7 +382,7 @@ class _HomePageState extends State<HomePage> {
       );
       if (d != null) {
         pickedJoin = d;
-        joinDateC.text = d.toIso8601String().split('T').first; // YYYY-MM-DD
+        joinDateC.text = d.toIso8601String().split('T').first;
       }
     }
 
@@ -301,270 +391,348 @@ class _HomePageState extends State<HomePage> {
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setLocal) => AlertDialog(
-          backgroundColor: const Color(0xFF111214),
-          title:
-              const Text('Add Customer', style: TextStyle(color: Colors.white)),
-          content: ConstrainedBox(
-            constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(context).size.height * 0.75,
-              maxWidth: MediaQuery.of(context).size.width * 0.9,
-            ),
-            child: SingleChildScrollView(
-              child: Form(
-                key: formKey,
-                child: Column(
-                  children: [
-                    // Name
-                    _glassyField(
-                        controller: nameC, label: 'Name', validator: _req),
-                    const SizedBox(height: 10),
+        builder: (ctx, setLocal) {
+          Future<void> pickFromGallery() async {
+            final x = await picker.pickImage(
+              source: ImageSource.gallery,
+              imageQuality: 85,
+              maxWidth: 1600,
+            );
+            if (x != null) {
+              setLocal(() {
+                photoFile = File(x.path);
+              });
+            }
+          }
 
-                    // Age
-                    _glassyField(
-                      controller: ageC,
-                      label: 'Age',
-                      keyboardType: TextInputType.number,
+          Future<void> pickFromCamera() async {
+            final x = await picker.pickImage(
+              source: ImageSource.camera,
+              imageQuality: 85,
+              maxWidth: 1600,
+            );
+            if (x != null) {
+              setLocal(() {
+                photoFile = File(x.path);
+              });
+            }
+          }
+
+          Future<String?> uploadPhotoIfNeeded() async {
+            if (photoFile == null) return null;
+            try {
+              final client = supa.Supabase.instance.client;
+              final now = DateTime.now().millisecondsSinceEpoch;
+              final path = 'users/${widget.fireBaseId}/$now.jpg';
+              await client.storage.from('avatars').upload(
+                    path,
+                    photoFile!,
+                    fileOptions: const supa.FileOptions(
+                      cacheControl: '3600',
+                      upsert: true,
+                      contentType: 'image/jpeg',
                     ),
-                    const SizedBox(height: 10),
+                  );
+              final publicUrl =
+                  client.storage.from('avatars').getPublicUrl(path);
+              return publicUrl;
+            } catch (e) {
+              debugPrint('❌ Upload photo failed: $e');
+              return null;
+            }
+          }
 
-                    // Address
-                    _glassyField(
-                        controller: addressC, label: 'Address', maxLines: 3),
-                    const SizedBox(height: 10),
+          return AlertDialog(
+            backgroundColor: const Color(0xFF111214),
+            title: const Text('Add Customer',
+                style: TextStyle(color: Colors.white)),
+            content: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.78,
+                maxWidth: MediaQuery.of(context).size.width * 0.95,
+              ),
+              child: SingleChildScrollView(
+                child: Form(
+                  key: formKey,
+                  child: Column(
+                    children: [
+                      // Avatar preview + buttons
+                      Row(
+                        children: [
+                          CircleAvatar(
+                            radius: 30,
+                            backgroundImage: photoFile != null
+                                ? FileImage(photoFile!)
+                                : null,
+                            child: photoFile == null
+                                ? const Icon(Icons.person, size: 30)
+                                : null,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                OutlinedButton.icon(
+                                  onPressed: pickFromGallery,
+                                  icon: const Icon(Icons.photo),
+                                  label: const Text('Gallery'),
+                                ),
+                                OutlinedButton.icon(
+                                  onPressed: pickFromCamera,
+                                  icon: const Icon(Icons.photo_camera),
+                                  label: const Text('Camera'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
 
-                    // Weight (kg) -> triggers BMI
-                    _glassyField(
-                      controller: weightC,
-                      label: 'Weight (kg)',
-                      keyboardType: TextInputType.number,
-                      onChanged: (_) => setLocal(recalcBmi),
-                    ),
-                    const SizedBox(height: 10),
+                      _glassyField(
+                          controller: nameC, label: 'Name', validator: _req),
+                      const SizedBox(height: 10),
 
-                    // BMI (auto) read-only
-                    _glassyField(
-                      controller: bmiC,
-                      label: 'BMI (auto)',
-                      readOnly: true,
-                    ),
-                    const SizedBox(height: 10),
+                      _glassyField(
+                        controller: ageC,
+                        label: 'Age',
+                        keyboardType: TextInputType.number,
+                      ),
+                      const SizedBox(height: 10),
 
-                    // GymHistory
-                    _glassyField(
-                        controller: gymHistoryC,
-                        label: 'GymHistory',
-                        maxLines: 3),
-                    const SizedBox(height: 10),
+                      _glassyField(
+                          controller: addressC, label: 'Address', maxLines: 3),
+                      const SizedBox(height: 10),
 
-                    // Target
-                    _glassyField(
-                        controller: targetC, label: 'Target', maxLines: 3),
-                    const SizedBox(height: 10),
+                      _glassyField(
+                        controller: weightC,
+                        label: 'Weight (kg)',
+                        keyboardType: TextInputType.number,
+                        onChanged: (_) => setLocal(recalcBmi),
+                      ),
+                      const SizedBox(height: 10),
 
-                    // HealthHistory
-                    _glassyField(
-                        controller: healthHistoryC,
-                        label: 'HealthHistory',
-                        maxLines: 3),
-                    const SizedBox(height: 10),
+                      _glassyField(
+                          controller: bmiC,
+                          label: 'BMI (auto)',
+                          readOnly: true),
+                      const SizedBox(height: 10),
 
-                    // SupplementHistory
-                    _glassyField(
-                        controller: supplementHistoryC,
-                        label: 'SupplementHistory',
-                        maxLines: 3),
-                    const SizedBox(height: 10),
+                      _glassyField(
+                          controller: gymHistoryC,
+                          label: 'GymHistory',
+                          maxLines: 3),
+                      const SizedBox(height: 10),
 
-                    // Height (cm) -> triggers BMI
-                    _glassyField(
-                      controller: heightC,
-                      label: 'Height (cm)',
-                      keyboardType: TextInputType.number,
-                      onChanged: (_) => setLocal(recalcBmi),
-                    ),
-                    const SizedBox(height: 10),
+                      _glassyField(
+                          controller: targetC, label: 'Target', maxLines: 3),
+                      const SizedBox(height: 10),
 
-                    // Membership (Dropdown)
-                    _glassDropdown<String>(
-                      label: 'Membership',
-                      value: membershipValue,
-                      items: const ['Standard', 'Premium', 'VIP'],
-                      onChanged: (v) => setLocal(() {
-                        membershipValue = v;
-                        membershipC.text = v ?? '';
-                      }),
-                    ),
-                    const SizedBox(height: 10),
+                      _glassyField(
+                          controller: healthHistoryC,
+                          label: 'HealthHistory',
+                          maxLines: 3),
+                      const SizedBox(height: 10),
 
-                    // ExercizeType (Dropdown)
-                    _glassDropdown<String>(
-                      label: 'ExercizeType',
-                      value: exerciseValue,
-                      items: const [
-                        'Strength',
-                        'Cardio',
-                        'CrossFit',
-                        'Yoga',
-                        'Mixed'
-                      ],
-                      onChanged: (v) => setLocal(() {
-                        exerciseValue = v;
-                        exercizeTypeC.text = v ?? '';
-                      }),
-                    ),
-                    const SizedBox(height: 10),
+                      _glassyField(
+                          controller: supplementHistoryC,
+                          label: 'SupplementHistory',
+                          maxLines: 3),
+                      const SizedBox(height: 10),
 
-                    // Sex (Dropdown)
-                    _glassDropdown<String>(
-                      label: 'Sex',
-                      value: sexValue,
-                      items: const ['Male', 'Female', 'Other'],
-                      onChanged: (v) => setLocal(() {
-                        sexValue = v;
-                        sexC.text = v ?? '';
-                      }),
-                    ),
-                    const SizedBox(height: 10),
+                      _glassyField(
+                        controller: heightC,
+                        label: 'Height (cm)',
+                        keyboardType: TextInputType.number,
+                        onChanged: (_) => setLocal(recalcBmi),
+                      ),
+                      const SizedBox(height: 10),
 
-                    // Email
-                    _glassyField(
-                      controller: emailC,
-                      label: 'Email',
-                      keyboardType: TextInputType.emailAddress,
-                    ),
-                    const SizedBox(height: 10),
+                      _glassDropdown<String>(
+                        label: 'Membership',
+                        value: membershipValue,
+                        items: const ['Standard', 'Premium', 'VIP'],
+                        onChanged: (v) => setLocal(() {
+                          membershipValue = v;
+                          membershipC.text = v ?? '';
+                        }),
+                      ),
+                      const SizedBox(height: 10),
 
-                    // JoinDate (picker)
-                    _glassyField(
-                      controller: joinDateC,
-                      label: 'JoinDate (YYYY-MM-DD)',
-                      readOnly: true,
-                      onTap: pickJoinDate,
-                      suffixIcon: const Icon(Icons.calendar_today,
-                          color: Colors.white70, size: 18),
-                    ),
-                    const SizedBox(height: 10),
+                      _glassDropdown<String>(
+                        label: 'ExercizeType',
+                        value: exerciseValue,
+                        items: const [
+                          'Strength',
+                          'Cardio',
+                          'CrossFit',
+                          'Yoga',
+                          'Mixed'
+                        ],
+                        onChanged: (v) => setLocal(() {
+                          exerciseValue = v;
+                          exercizeTypeC.text = v ?? '';
+                        }),
+                      ),
+                      const SizedBox(height: 10),
 
-                    // Phone
-                    _glassyField(
-                      controller: phoneC,
-                      label: 'Phone',
-                      keyboardType: TextInputType.phone,
-                    ),
-                  ],
+                      _glassDropdown<String>(
+                        label: 'Sex',
+                        value: sexValue,
+                        items: const ['Male', 'Female', 'Other'],
+                        onChanged: (v) => setLocal(() {
+                          sexValue = v;
+                          sexC.text = v ?? '';
+                        }),
+                      ),
+                      const SizedBox(height: 10),
+
+                      _glassyField(
+                        controller: emailC,
+                        label: 'Email',
+                        keyboardType: TextInputType.emailAddress,
+                      ),
+                      const SizedBox(height: 10),
+
+                      _glassyField(
+                        controller: joinDateC,
+                        label: 'JoinDate (YYYY-MM-DD)',
+                        readOnly: true,
+                        onTap: () => pickJoinDate(ctx),
+                        suffixIcon: const Icon(Icons.calendar_today,
+                            color: Colors.white70, size: 18),
+                      ),
+                      const SizedBox(height: 10),
+
+                      _glassyField(
+                        controller: phoneC,
+                        label: 'Phone',
+                        keyboardType: TextInputType.phone,
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child:
-                  const Text('Cancel', style: TextStyle(color: Colors.white70)),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF2A2F3A),
-                foregroundColor: Colors.white,
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Cancel',
+                    style: TextStyle(color: Colors.white70)),
               ),
-              onPressed: () async {
-                if (!formKey.currentState!.validate()) return;
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF2A2F3A),
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: () async {
+                  if (!formKey.currentState!.validate()) return;
 
-                // Ensure GymID
-                final gymId = await _ensureGymId(gym);
-                if (gymId == null || gymId.isEmpty) {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                        content: Text(
-                            "Couldn't resolve GymID. Try re-saving the gym.")));
+                  // Ensure GymID
+                  final gymId = await _ensureGymId(gym);
+                  if (gymId == null || gymId.isEmpty) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                            content: Text(
+                                "Couldn't resolve GymID. Try re-saving the gym.")),
+                      );
+                    }
+                    return;
                   }
-                  return;
-                }
 
-                try {
-                  await _ensureSupabaseSession();
+                  try {
+                    // 1) Upload photo if any
+                    final photoUrl = await uploadPhotoIfNeeded();
 
-                  int? _toInt(TextEditingController c) => c.text.trim().isEmpty
-                      ? null
-                      : int.tryParse(c.text.trim());
+                    int? _toInt(TextEditingController c) =>
+                        c.text.trim().isEmpty
+                            ? null
+                            : int.tryParse(c.text.trim());
 
-                  final payload = {
-                    'GymID': gymId,
-                    'FireBaseID': widget.fireBaseId,
+                    // 2) Build payload (include PhotoURL if we got one)
+                    final payload = {
+                      'GymID': gymId,
+                      'FireBaseID': widget.fireBaseId, // stable FK
+                      'PhotoURL':
+                          (photoUrl?.isNotEmpty ?? false) ? photoUrl : null,
 
-                    // exact order/keys per your schema
-                    'Name': nameC.text.trim(),
-                    'Age': _toInt(ageC),
-                    'Address': addressC.text.trim().isEmpty
-                        ? null
-                        : addressC.text.trim(),
-                    'Weight': _toInt(weightC),
-                    'BMI': _toInt(bmiC),
-                    'GymHistory': gymHistoryC.text.trim().isEmpty
-                        ? null
-                        : gymHistoryC.text.trim(),
-                    'Target': targetC.text.trim().isEmpty
-                        ? null
-                        : targetC.text.trim(),
-                    'HealthHistory': healthHistoryC.text.trim().isEmpty
-                        ? null
-                        : healthHistoryC.text.trim(),
-                    'SupplementHistory': supplementHistoryC.text.trim().isEmpty
-                        ? null
-                        : supplementHistoryC.text.trim(),
-                    'Height': _toInt(heightC),
-                    'Membership': membershipC.text.trim().isEmpty
-                        ? null
-                        : membershipC.text.trim(),
-                    'ExercizeType': exercizeTypeC.text.trim().isEmpty
-                        ? null
-                        : exercizeTypeC.text.trim(),
-                    'Sex': sexC.text.trim().isEmpty ? null : sexC.text.trim(),
-                    'Email':
-                        emailC.text.trim().isEmpty ? null : emailC.text.trim(),
-                    'JoinDate': joinDateC.text.trim().isEmpty
-                        ? null
-                        : joinDateC.text.trim(),
-                    'Phone':
-                        phoneC.text.trim().isEmpty ? null : phoneC.text.trim(),
-                  };
+                      'Name': nameC.text.trim(),
+                      'Age': _toInt(ageC),
+                      'Address': addressC.text.trim().isEmpty
+                          ? null
+                          : addressC.text.trim(),
+                      'Weight': _toInt(weightC),
+                      'BMI': _toInt(bmiC),
+                      'GymHistory': gymHistoryC.text.trim().isEmpty
+                          ? null
+                          : gymHistoryC.text.trim(),
+                      'Target': targetC.text.trim().isEmpty
+                          ? null
+                          : targetC.text.trim(),
+                      'HealthHistory': healthHistoryC.text.trim().isEmpty
+                          ? null
+                          : healthHistoryC.text.trim(),
+                      'SupplementHistory':
+                          supplementHistoryC.text.trim().isEmpty
+                              ? null
+                              : supplementHistoryC.text.trim(),
+                      'Height': _toInt(heightC),
+                      'Membership': membershipC.text.trim().isEmpty
+                          ? null
+                          : membershipC.text.trim(),
+                      'ExercizeType': exercizeTypeC.text.trim().isEmpty
+                          ? null
+                          : exercizeTypeC.text.trim(),
+                      'Sex': sexC.text.trim().isEmpty ? null : sexC.text.trim(),
+                      'Email': emailC.text.trim().isEmpty
+                          ? null
+                          : emailC.text.trim(),
+                      'JoinDate': joinDateC.text.trim().isEmpty
+                          ? null
+                          : joinDateC.text.trim(),
+                      'Phone': phoneC.text.trim().isEmpty
+                          ? null
+                          : phoneC.text.trim(),
+                    };
 
-                  final inserted = await Supabase.instance.client
-                      .from('Users')
-                      .insert(payload)
-                      .select('UserID')
-                      .single();
+                    await supa.Supabase.instance.client
+                        .from('Users')
+                        .insert(payload)
+                        .select('UserID')
+                        .single();
 
-                  if (mounted) {
-                    Navigator.of(ctx).pop();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                            'Customer added (UserID: ${inserted['UserID'] ?? 'new'})'),
-                      ),
-                    );
+                    if (mounted) {
+                      Navigator.of(ctx).pop();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Customer added')),
+                      );
+                    }
+                  } catch (e) {
+                    debugPrint('❌ Add customer failed: $e');
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Failed to add customer: $e')),
+                      );
+                    }
                   }
-                } catch (e) {
-                  debugPrint('❌ Add customer failed: $e');
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Failed to add customer: $e')),
-                    );
-                  }
-                }
-              },
-              child: const Text('Save'),
-            ),
-          ],
-        ),
+                },
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
-  // ======= END: Add Customer dialog =======
+  // ======= END Add Customer dialog =======
 
   @override
   Widget build(BuildContext context) {
+    final photoUrl = _avatarUrl(_user);
+
     return Scaffold(
       backgroundColor: const Color(0xFF0D0E11),
       appBar: AppBar(
@@ -572,217 +740,258 @@ class _HomePageState extends State<HomePage> {
         elevation: 0,
         title: const Text("Gym Manager"),
         actions: [
-          if (widget.user.photoURL != null && widget.user.photoURL!.isNotEmpty)
+          if (photoUrl != null && photoUrl.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(right: 8.0),
               child: InkWell(
                 borderRadius: BorderRadius.circular(999),
                 onTap: () {
-                  Navigator.push(context,
-                      MaterialPageRoute(builder: (_) => const ProfilePage()));
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          ProfilePage(fireBaseId: widget.fireBaseId),
+                    ),
+                  );
                 },
-                child: CircleAvatar(
-                    backgroundImage: NetworkImage(widget.user.photoURL ?? "")),
+                child: CircleAvatar(backgroundImage: NetworkImage(photoUrl)),
               ),
             )
           else
             IconButton(
               icon: const Icon(Icons.person),
               onPressed: () {
-                Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const ProfilePage()));
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => ProfilePage(fireBaseId: widget.fireBaseId),
+                  ),
+                );
               },
             ),
           IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
         ],
       ),
-      body: userGyms.isEmpty
-          ? Center(
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF2A2F3A),
-                    foregroundColor: Colors.white),
-                onPressed: () => _showGymForm(),
-                child: const Text("Add First Gym"),
+      body: Column(
+        children: [
+          if (_loadError != null)
+            Container(
+              width: double.infinity,
+              color: Colors.red.withOpacity(0.08),
+              padding: const EdgeInsets.all(8),
+              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Text(
+                _loadError!,
+                style: const TextStyle(color: Colors.redAccent),
               ),
-            )
-          : Container(
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Color(0xFF0D0E11),
-                    Color(0xFF111318),
-                    Color(0xFF0F1115)
-                  ],
-                ),
-              ),
-              padding: const EdgeInsets.all(12.0),
-              child: Column(
-                children: [
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: ElevatedButton.icon(
-                      icon: const Icon(Icons.add),
-                      label: const Text("Add Another Gym"),
+            ),
+          Expanded(
+            child: userGyms.isEmpty
+                ? Center(
+                    child: ElevatedButton(
                       style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFF2A2F3A),
                           foregroundColor: Colors.white),
-                      onPressed: () => _showGymForm(),
+                      onPressed: _showGymForm,
+                      child: const Text("Add First Gym"),
                     ),
-                  ),
-                  const SizedBox(height: 10),
-                  Expanded(
-                    child: GridView.builder(
-                      gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 2,
-                        childAspectRatio: 3 / 3,
-                        crossAxisSpacing: 12,
-                        mainAxisSpacing: 12,
+                  )
+                : Container(
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          Color(0xFF0D0E11),
+                          Color(0xFF111318),
+                          Color(0xFF0F1115)
+                        ],
                       ),
-                      itemCount: userGyms.length,
-                      itemBuilder: (context, index) {
-                        final gym = userGyms[index];
-                        return _GlassCard(
-                          child: Padding(
-                            padding: const EdgeInsets.all(12.0),
-                            child: LayoutBuilder(
-                              builder: (context, constraints) {
-                                return Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    // HEADER ROW with "View" button (eye icon) at top-right
-                                    Row(
-                                      children: [
-                                        const Icon(Icons.fitness_center,
-                                            color: Color(0xFF4F9CF9), size: 16),
-                                        const SizedBox(width: 4),
-                                        const Text(
-                                          "Gym",
-                                          style: TextStyle(
-                                            color: Colors.white70,
-                                            fontSize: 12,
-                                            letterSpacing: 0.6,
-                                          ),
-                                        ),
-                                        const Spacer(),
-                                        TextButton.icon(
-                                          onPressed: () =>
-                                              _navigateToDashboard(gym),
-                                          icon: const Icon(Icons.visibility,
-                                              size: 18),
-                                          label: const Text('View'),
-                                          style: TextButton.styleFrom(
-                                            foregroundColor: Colors.white,
-                                            textStyle: const TextStyle(
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                            padding: const EdgeInsets.symmetric(
-                                                horizontal: 8, vertical: 4),
-                                            minimumSize: Size.zero,
-                                            tapTargetSize: MaterialTapTargetSize
-                                                .shrinkWrap,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 8),
-
-                                    // CONTENT
-                                    Expanded(
-                                      child: SingleChildScrollView(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            // Gym name now plain text (not clickable)
-                                            Text(
-                                              gym['name'] ?? '',
-                                              style: const TextStyle(
-                                                fontSize: 16,
-                                                fontWeight: FontWeight.bold,
-                                                color: Colors.white,
-                                              ),
-                                            ),
-                                            const SizedBox(height: 8),
-                                            Text(
-                                              "Location:",
-                                              style: TextStyle(
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.bold,
-                                                color: Colors.white
-                                                    .withValues(alpha: 0.7),
-                                              ),
-                                            ),
-                                            Text(
-                                              gym['location'] ?? '',
-                                              maxLines: 3,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: const TextStyle(
-                                                  fontSize: 12,
-                                                  color: Colors.white70),
-                                            ),
-                                            const SizedBox(height: 8),
-                                            Text(
-                                              "Capacity: ${gym['capacity'] ?? 0}",
-                                              style: const TextStyle(
-                                                  fontSize: 12,
-                                                  color: Colors.white70),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(height: 8),
-
-                                    // ACTIONS
-                                    Row(
-                                      mainAxisAlignment: MainAxisAlignment.end,
-                                      children: [
-                                        IconButton(
-                                          tooltip: 'Edit Gym',
-                                          icon: const Icon(Icons.edit,
-                                              color: Colors.white70, size: 18),
-                                          onPressed: () =>
-                                              _showGymForm(index: index),
-                                        ),
-                                        IconButton(
-                                          tooltip: 'Delete Gym',
-                                          icon: const Icon(Icons.delete,
-                                              color: Colors.white70, size: 18),
-                                          onPressed: () => _deleteGym(index),
-                                        ),
-                                        IconButton(
-                                          tooltip: 'Add Customer',
-                                          icon: const Icon(
-                                              Icons.person_add_alt_1,
-                                              color: Colors.white70,
-                                              size: 18),
-                                          onPressed: () =>
-                                              _showAddCustomerForm(gym),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                );
-                              },
-                            ),
+                    ),
+                    padding: const EdgeInsets.all(12.0),
+                    child: Column(
+                      children: [
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: ElevatedButton.icon(
+                            icon: const Icon(Icons.add),
+                            label: const Text("Add Another Gym"),
+                            style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF2A2F3A),
+                                foregroundColor: Colors.white),
+                            onPressed: _showGymForm,
                           ),
-                        );
-                      },
+                        ),
+                        const SizedBox(height: 10),
+                        Expanded(
+                          child: GridView.builder(
+                            gridDelegate:
+                                const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 2,
+                              childAspectRatio: 3 / 3,
+                              crossAxisSpacing: 12,
+                              mainAxisSpacing: 12,
+                            ),
+                            itemCount: userGyms.length,
+                            itemBuilder: (context, index) {
+                              final gym = userGyms[index];
+                              return _GlassCard(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(12.0),
+                                  child: LayoutBuilder(
+                                    builder: (context, constraints) {
+                                      return Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              const Icon(Icons.fitness_center,
+                                                  color: Color(0xFF4F9CF9),
+                                                  size: 16),
+                                              const SizedBox(width: 4),
+                                              const Text(
+                                                "Gym",
+                                                style: TextStyle(
+                                                  color: Colors.white70,
+                                                  fontSize: 12,
+                                                  letterSpacing: 0.6,
+                                                ),
+                                              ),
+                                              const Spacer(),
+                                              TextButton.icon(
+                                                onPressed: () =>
+                                                    _navigateToDashboard(gym),
+                                                icon: const Icon(
+                                                    Icons.visibility,
+                                                    size: 18),
+                                                label: const Text('View'),
+                                                style: TextButton.styleFrom(
+                                                  foregroundColor: Colors.white,
+                                                  textStyle: const TextStyle(
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
+                                                  padding: const EdgeInsets
+                                                      .symmetric(
+                                                      horizontal: 8,
+                                                      vertical: 4),
+                                                  minimumSize: Size.zero,
+                                                  tapTargetSize:
+                                                      MaterialTapTargetSize
+                                                          .shrinkWrap,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Expanded(
+                                            child: SingleChildScrollView(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    gym['name'] ?? '',
+                                                    style: const TextStyle(
+                                                      fontSize: 16,
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                      color: Colors.white,
+                                                    ),
+                                                  ),
+                                                  const SizedBox(height: 8),
+                                                  Text(
+                                                    "Location:",
+                                                    style: TextStyle(
+                                                      fontSize: 12,
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                      color: Colors.white
+                                                          .withValues(
+                                                              alpha: 0.7),
+                                                    ),
+                                                  ),
+                                                  Text(
+                                                    gym['location'] ?? '',
+                                                    maxLines: 3,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: const TextStyle(
+                                                        fontSize: 12,
+                                                        color: Colors.white70),
+                                                  ),
+                                                  const SizedBox(height: 8),
+                                                  Text(
+                                                    "Capacity: ${gym['capacity'] ?? 0}",
+                                                    style: const TextStyle(
+                                                        fontSize: 12,
+                                                        color: Colors.white70),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.end,
+                                            children: [
+                                              IconButton(
+                                                tooltip: 'Edit Gym',
+                                                icon: const Icon(Icons.edit,
+                                                    color: Colors.white70,
+                                                    size: 18),
+                                                onPressed: () =>
+                                                    _showGymForm(index: index),
+                                              ),
+                                              IconButton(
+                                                tooltip: 'Delete Gym',
+                                                icon: const Icon(Icons.delete,
+                                                    color: Colors.white70,
+                                                    size: 18),
+                                                onPressed: () =>
+                                                    _deleteGym(index),
+                                              ),
+                                              IconButton(
+                                                tooltip: 'Add Customer',
+                                                icon: const Icon(
+                                                    Icons.person_add_alt_1,
+                                                    color: Colors.white70,
+                                                    size: 18),
+                                                onPressed: () =>
+                                                    _showAddCustomerForm(gym),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      );
+                                    },
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                ],
-              ),
-            ),
+          ),
+        ],
+      ),
     );
   }
 
-  // ---- UI helpers ----
+  String? _avatarUrl(supa.User? u) {
+    final md = u?.userMetadata ?? {};
+    final fromAvatar = md['avatar_url'];
+    final fromPicture = md['picture'];
+    if (fromAvatar is String && fromAvatar.isNotEmpty) return fromAvatar;
+    if (fromPicture is String && fromPicture.isNotEmpty) return fromPicture;
+    return null;
+  }
 
-  // glassy text field with optional onChanged hook
+  // ---------- UI helpers ----------
+
   Widget _glassyField({
     required TextEditingController controller,
     required String label,
@@ -815,7 +1024,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // glassy dropdown with consistent styling
   Widget _glassDropdown<T>({
     required String label,
     required T? value,
@@ -823,7 +1031,7 @@ class _HomePageState extends State<HomePage> {
     required ValueChanged<T?> onChanged,
   }) {
     return DropdownButtonFormField<T>(
-      value: value,
+      initialValue: value,
       items: items
           .map(
             (e) => DropdownMenuItem<T>(

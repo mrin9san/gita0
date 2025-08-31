@@ -1,12 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_auth/firebase_auth.dart' as fb;
-import 'package:google_sign_in/google_sign_in.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-
-// Supabase (alias only what we need)
-import 'package:supabase_flutter/supabase_flutter.dart' as supa
-    show Supabase, OAuthProvider;
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 
 import 'login_page.dart';
 import 'home_page.dart';
@@ -16,14 +10,9 @@ late Box gymsBox;
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Firebase
-  await Firebase.initializeApp();
-
-  // Hive
   await Hive.initFlutter();
   gymsBox = await Hive.openBox('gymsBox');
 
-  // Supabase
   await supa.Supabase.initialize(
     url: 'https://ffwrdbdixtdkawpzfcsu.supabase.co',
     anonKey:
@@ -46,63 +35,89 @@ class MyApp extends StatelessWidget {
   }
 }
 
+/// If no Supabase session -> LoginPage.
+/// If signed in -> ensure a stable `Fire` row and pass `fireBaseId` to HomePage.
 class AuthWrapper extends StatelessWidget {
   const AuthWrapper({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<fb.User?>(
-      stream: fb.FirebaseAuth.instance.authStateChanges(),
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-              body: Center(child: CircularProgressIndicator()));
-        }
+    final auth = supa.Supabase.instance.client.auth;
 
-        if (!snap.hasData || snap.data == null) {
+    return StreamBuilder<supa.AuthState>(
+      stream: auth.onAuthStateChange,
+      builder: (context, _) {
+        final session = auth.currentSession;
+        if (session == null) {
           return const LoginPage();
         }
-
-        final user = snap.data!;
-
-        // 1) Make sure a Supabase session exists (so RLS sees role=authenticated)
-        return FutureBuilder<void>(
-          future: _ensureSupabaseSession(),
-          builder: (context, sSnap) {
-            if (sSnap.connectionState == ConnectionState.waiting) {
+        return FutureBuilder<String>(
+          future: _getOrCreateFireBaseId(),
+          builder: (context, snap) {
+            if (snap.connectionState == ConnectionState.waiting) {
               return const Scaffold(
-                  body: Center(child: CircularProgressIndicator()));
-            }
-            if (sSnap.hasError) {
-              return _ErrorScaffold(
-                title: 'Could not initialize Supabase session.',
-                error: '${sSnap.error}',
+                body: Center(child: CircularProgressIndicator()),
               );
             }
-
-            // 2) Fetch/create row in "Fire" and get FirebaseID (UUID)
-            return FutureBuilder<String>(
-              future: _fetchOrCreateFireBaseId(user),
-              builder: (context, fSnap) {
-                if (fSnap.connectionState == ConnectionState.waiting) {
-                  return const Scaffold(
-                      body: Center(child: CircularProgressIndicator()));
-                }
-                if (fSnap.hasError || !fSnap.hasData) {
-                  return _ErrorScaffold(
-                    title: 'Could not load your profile record.',
-                    error: '${fSnap.error ?? 'Unknown error'}',
-                  );
-                }
-
-                final fireBaseId = fSnap.data!;
-                return HomePage(user: user, fireBaseId: fireBaseId);
-              },
-            );
+            if (snap.hasError || !snap.hasData) {
+              return _ErrorScaffold(
+                title: 'Could not load your profile record.',
+                error: '${snap.error ?? 'Unknown error'}',
+              );
+            }
+            return HomePage(fireBaseId: snap.data!);
           },
         );
       },
     );
+  }
+
+  /// IMPORTANT:
+  /// - Never change an existing FireBaseID (it’s referenced by Gyms/Users).
+  /// - Find by EmailID; if missing, INSERT and let DB generate FireBaseID.
+  Future<String> _getOrCreateFireBaseId() async {
+    final client = supa.Supabase.instance.client;
+    final user = client.auth.currentUser;
+    final email = user?.email;
+    final name = (user?.userMetadata?['name'] as String?) ?? 'User';
+    if (email == null || email.isEmpty) {
+      throw Exception('Signed-in user has no email');
+    }
+
+    final existing = await client
+        .from('Fire')
+        .select('FireBaseID, Name, Location')
+        .eq('EmailID', email)
+        .maybeSingle();
+
+    if (existing != null) {
+      // Optionally keep Name/Location fresh (but do NOT touch FireBaseID)
+      try {
+        await client.from('Fire').update({'Name': name}).eq('EmailID', email);
+      } catch (_) {}
+      final id = existing['FireBaseID'] as String?;
+      if (id == null || id.isEmpty) {
+        throw Exception('Existing Fire row has no FireBaseID');
+      }
+      return id;
+    }
+
+    // Create new; let DB generate FireBaseID
+    final inserted = await client
+        .from('Fire')
+        .insert({
+          'EmailID': email,
+          'Name': name,
+          'Location': 'Unknown',
+        })
+        .select('FireBaseID')
+        .single();
+
+    final newId = inserted['FireBaseID'] as String?;
+    if (newId == null || newId.isEmpty) {
+      throw Exception('Failed to obtain FireBaseID from insert');
+    }
+    return newId;
   }
 }
 
@@ -136,58 +151,4 @@ class _ErrorScaffold extends StatelessWidget {
       ),
     );
   }
-}
-
-/// Ensure Supabase Auth session exists (so RLS has auth.email()).
-/// If none, try a silent Google sign-in and mint a Supabase session with the ID token.
-Future<void> _ensureSupabaseSession() async {
-  final client = supa.Supabase.instance.client;
-  if (client.auth.currentSession != null) return;
-
-  final silent = await GoogleSignIn().signInSilently();
-  if (silent == null) return;
-  final gAuth = await silent.authentication;
-  final idToken = gAuth.idToken;
-  if (idToken == null) return;
-
-  await client.auth.signInWithIdToken(
-    provider: supa.OAuthProvider.google,
-    idToken: idToken,
-    accessToken: gAuth.accessToken, // recommended on Android
-  );
-}
-
-/// Read/create the user's row in "Fire" by EmailID; return FirebaseID (UUID).
-Future<String> _fetchOrCreateFireBaseId(fb.User user) async {
-  final client = supa.Supabase.instance.client;
-
-  final email = user.email;
-  if (email == null || email.isEmpty) {
-    throw Exception(
-        'Signed-in Firebase user has no email; cannot map to Fire.EmailID');
-  }
-
-  // Try find
-  final existing =
-      await client.from('Fire').select('FireBaseID').eq('EmailID', email);
-  if (existing is List && existing.isNotEmpty) {
-    final id = existing.first['FireBaseID'];
-    if (id is String && id.isNotEmpty) return id;
-  }
-
-  // Insert
-  final inserted = await client
-      .from('Fire')
-      .insert({
-        'EmailID': email,
-        'Name': user.displayName ?? 'User',
-        // 'Location': 'Unknown' // table default exists
-      })
-      .select('FireBaseID')
-      .single();
-
-  final newId = inserted['FireBaseID'];
-  if (newId is String && newId.isNotEmpty) return newId;
-
-  throw Exception('Failed to obtain FireBaseID from Fire table');
 }
