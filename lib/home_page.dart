@@ -1,10 +1,10 @@
-import 'dart:io'; // NEW
+import 'dart:io';
 import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:image_picker/image_picker.dart'; // NEW
+import 'package:image_picker/image_picker.dart';
 
 import 'profile_page.dart';
 import 'dashboard.dart';
@@ -29,13 +29,18 @@ class _HomePageState extends State<HomePage> {
 
   supa.User? _user;
 
+  bool _syncing = false;
+
   @override
   void initState() {
     super.initState();
     gymsBox = Hive.box('gymsBox');
     _user = supa.Supabase.instance.client.auth.currentUser;
-    _loadGyms();
+    _loadGyms(); // fast local load
+    _syncGyms(); // then reconcile with Supabase
   }
+
+  // ------------------ LOCAL (Hive) ------------------
 
   void _loadGyms() {
     final key = widget.fireBaseId;
@@ -46,53 +51,234 @@ class _HomePageState extends State<HomePage> {
     setState(() {});
   }
 
-  Future<void> _saveGym({int? index}) async {
-    if (_formKey.currentState!.validate()) {
-      final gymData = <String, dynamic>{
-        'name': _gymNameController.text.trim(),
-        'location': _gymLocationController.text.trim(),
-        'capacity': int.tryParse(_gymCapacityController.text.trim()) ?? 0,
-      };
+  Future<void> _saveGymsToHive(List<Map<String, dynamic>> gyms) async {
+    await gymsBox.put(widget.fireBaseId, gyms);
+  }
 
+  // ------------------ REMOTE (Supabase) ------------------
+
+  supa.SupabaseClient get _client => supa.Supabase.instance.client;
+
+  Future<List<Map<String, dynamic>>> _fetchRemoteGyms() async {
+    final rows = await _client
+        .from('Gyms')
+        .select('GymID,GymName,Location,Capacity,FireBaseID,created_at')
+        .eq('FireBaseID', widget.fireBaseId)
+        .order('created_at', ascending: true);
+
+    return (rows as List)
+        .map((r) => {
+              'GymID': r['GymID'] as String?,
+              'name': r['GymName'] as String? ?? '',
+              'location': r['Location'] as String? ?? '',
+              'capacity': (r['Capacity'] is int)
+                  ? r['Capacity'] as int
+                  : int.tryParse('${r['Capacity']}') ?? 0,
+            })
+        .toList();
+  }
+
+  /// Push any local gyms that don't have a GymID to Supabase.
+  /// If a matching remote record exists by (name+location), we backfill its GymID;
+  /// otherwise we insert and store the new GymID.
+  Future<void> _pushUnsyncedLocalToRemote(
+    List<Map<String, dynamic>> local,
+    List<Map<String, dynamic>> remote,
+  ) async {
+    // Build quick lookup for remote by (name|location)
+    String _key(Map g) =>
+        '${(g['name'] ?? '').toString().trim().toLowerCase()}|${(g['location'] ?? '').toString().trim().toLowerCase()}';
+
+    final remoteByKey = <String, Map<String, dynamic>>{
+      for (final r in remote) _key(r): r,
+    };
+
+    for (final g in local) {
+      final hasId = (g['GymID'] is String) && (g['GymID'] as String).isNotEmpty;
+      final k = _key(g);
+      if (hasId) continue;
+
+      // Try to match an existing remote by (name, location)
+      final match = remoteByKey[k];
+      if (match != null && (match['GymID'] as String?)?.isNotEmpty == true) {
+        g['GymID'] = match['GymID']; // backfill
+        continue;
+      }
+
+      // Otherwise, insert new remote row
       try {
-        final response = await supa.Supabase.instance.client
+        final inserted = await _client
             .from('Gyms')
             .insert({
-              'GymName': gymData['name'],
-              'Location': gymData['location'],
-              'Capacity': gymData['capacity'],
-              'FireBaseID': widget.fireBaseId, // stable FK
+              'GymName': g['name'] ?? '',
+              'Location': g['location'] ?? '',
+              'Capacity': g['capacity'] ?? 0,
+              'FireBaseID': widget.fireBaseId,
             })
             .select('GymID')
             .single();
 
-        if (response != null) {
-          gymData['GymID'] = response['GymID'];
+        final newId = inserted['GymID'] as String?;
+        if (newId != null && newId.isNotEmpty) {
+          g['GymID'] = newId;
+          // Add to our in-memory remote list & map for future matches in loop
+          final canonical = {
+            'GymID': newId,
+            'name': g['name'],
+            'location': g['location'],
+            'capacity': g['capacity'] ?? 0,
+          };
+          remote.add(canonical);
+          remoteByKey[k] = canonical;
         }
-
-        if (index == null) {
-          userGyms.add(gymData);
-        } else {
-          userGyms[index] = gymData;
-        }
-        gymsBox.put(widget.fireBaseId, userGyms);
-
-        _gymNameController.clear();
-        _gymLocationController.clear();
-        _gymCapacityController.clear();
-
-        setState(() {});
-        if (mounted) Navigator.of(context).pop();
       } catch (e) {
-        debugPrint("❌ Supabase insert failed: $e");
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Failed to save gym in Supabase: $e")),
-          );
-        }
+        // Non-fatal; we keep going and remain offline for this item
+        debugPrint('⚠️ Could not push unsynced gym "${g['name']}": $e');
       }
     }
   }
+
+  /// Source of truth sync:
+  /// 1) read local
+  /// 2) fetch remote
+  /// 3) push unsynced locals (no GymID) up
+  /// 4) re-fetch remote
+  /// 5) unify & write to Hive & UI
+  Future<void> _syncGyms() async {
+    if (_syncing) return;
+    setState(() => _syncing = true);
+    try {
+      final local = List<Map<String, dynamic>>.from(userGyms);
+      var remote = await _fetchRemoteGyms();
+
+      await _pushUnsyncedLocalToRemote(local, remote);
+
+      // Fetch again to ensure we have all remote with proper IDs
+      remote = await _fetchRemoteGyms();
+
+      // Merge: remote wins; keep format consistent with UI/local
+      userGyms = _dedupByIdOrKey(remote);
+      await _saveGymsToHive(userGyms);
+      setState(() {});
+    } catch (e) {
+      debugPrint('❌ Sync failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Sync failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _syncing = false);
+    }
+  }
+
+  /// Deduplicate list by GymID, then by (name|location)
+  List<Map<String, dynamic>> _dedupByIdOrKey(List<Map<String, dynamic>> list) {
+    final seenIds = <String>{};
+    final seenKeys = <String>{};
+    String key(Map g) =>
+        '${(g['name'] ?? '').toString().trim().toLowerCase()}|${(g['location'] ?? '').toString().trim().toLowerCase()}';
+
+    final out = <Map<String, dynamic>>[];
+    for (final g in list) {
+      final id = g['GymID'] as String?;
+      if (id != null && id.isNotEmpty) {
+        if (seenIds.add(id)) out.add(Map<String, dynamic>.from(g));
+        continue;
+      }
+      final k = key(g);
+      if (seenKeys.add(k)) out.add(Map<String, dynamic>.from(g));
+    }
+    return out;
+  }
+
+  // ------------------ CREATE / UPDATE / DELETE Gyms ------------------
+
+  Future<void> _saveGym({int? index}) async {
+    if (!_formKey.currentState!.validate()) return;
+
+    final gymData = <String, dynamic>{
+      'name': _gymNameController.text.trim(),
+      'location': _gymLocationController.text.trim(),
+      'capacity': int.tryParse(_gymCapacityController.text.trim()) ?? 0,
+    };
+
+    try {
+      // Always create remotely first so both devices see it
+      final response = await _client
+          .from('Gyms')
+          .insert({
+            'GymName': gymData['name'],
+            'Location': gymData['location'],
+            'Capacity': gymData['capacity'],
+            'FireBaseID': widget.fireBaseId,
+          })
+          .select('GymID')
+          .single();
+
+      if (response != null) {
+        gymData['GymID'] = response['GymID'];
+      }
+
+      if (index == null) {
+        userGyms.add(gymData);
+      } else {
+        // Update remote if we have an id
+        final id = userGyms[index]['GymID'] as String?;
+        if (id != null && id.isNotEmpty) {
+          await _client.from('Gyms').update({
+            'GymName': gymData['name'],
+            'Location': gymData['location'],
+            'Capacity': gymData['capacity'],
+          }).eq('GymID', id);
+          gymData['GymID'] = id;
+        }
+        userGyms[index] = gymData;
+      }
+
+      await _saveGymsToHive(userGyms);
+      _gymNameController.clear();
+      _gymLocationController.clear();
+      _gymCapacityController.clear();
+
+      if (mounted) Navigator.of(context).pop();
+
+      // Re-sync to be extra sure all devices converge
+      await _syncGyms();
+    } catch (e) {
+      debugPrint("❌ Supabase insert/update failed: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Failed to save gym: $e")),
+        );
+      }
+    }
+  }
+
+  Future<void> _deleteGym(int index) async {
+    final g = userGyms[index];
+    final id = g['GymID'] as String?;
+    try {
+      if (id != null && id.isNotEmpty) {
+        await _client.from('Gyms').delete().eq('GymID', id);
+      } else {
+        // fallback: delete by compound condition (less reliable)
+        await _client
+            .from('Gyms')
+            .delete()
+            .eq('FireBaseID', widget.fireBaseId)
+            .eq('GymName', g['name'] ?? '')
+            .eq('Location', g['location'] ?? '');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Remote delete failed (continuing with local): $e');
+    }
+    userGyms.removeAt(index);
+    await _saveGymsToHive(userGyms);
+    setState(() {});
+  }
+
+  // ------------------ UI: forms & dialogs ------------------
 
   void _showGymForm({int? index}) {
     if (index != null) {
@@ -162,23 +348,15 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  void _deleteGym(int index) {
-    userGyms.removeAt(index);
-    gymsBox.put(widget.fireBaseId, userGyms);
-    setState(() {});
-  }
-
   Future<void> _logout() async {
-    // 1) Supabase session
     try {
-      await supa.Supabase.instance.client.auth.signOut();
+      await _client.auth.signOut();
     } catch (_) {}
 
-    // 2) Google account (so next time you see the account picker)
     try {
       final google = GoogleSignIn();
-      await google.disconnect(); // revoke app access
-      await google.signOut(); // clear cached sign-in
+      await google.disconnect();
+      await google.signOut();
     } catch (_) {}
 
     if (mounted) {
@@ -200,7 +378,7 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// If local gym map lacks GymID, fetch it from Supabase by (FireBaseID + GymName + Location)
+  /// If local gym map lacks GymID, fetch from Supabase by (FireBaseID + GymName + Location)
   Future<String?> _ensureGymId(Map<String, dynamic> gym) async {
     final dynamic existing = gym['GymID'];
     if (existing is String && existing.isNotEmpty) return existing;
@@ -209,7 +387,7 @@ class _HomePageState extends State<HomePage> {
     final loc = (gym['location'] ?? '').toString();
     if (name.isEmpty) return null;
 
-    final List<dynamic> rows = await supa.Supabase.instance.client
+    final List<dynamic> rows = await _client
         .from('Gyms')
         .select('GymID')
         .eq('FireBaseID', widget.fireBaseId)
@@ -222,14 +400,14 @@ class _HomePageState extends State<HomePage> {
       final id = rows.first['GymID'] as String?;
       if (id != null && id.isNotEmpty) {
         gym['GymID'] = id;
-        gymsBox.put(widget.fireBaseId, userGyms);
+        await _saveGymsToHive(userGyms);
         return id;
       }
     }
     return null;
   }
 
-  // ======= Add Customer dialog (now with avatar picker & upload to 'avatars') =======
+  // ======= Add Customer dialog (with avatar picker & upload to 'avatars') =======
   void _showAddCustomerForm(Map<String, dynamic> gym) async {
     final formKey = GlobalKey<FormState>();
 
@@ -254,7 +432,6 @@ class _HomePageState extends State<HomePage> {
     String? membershipValue;
     String? exerciseValue;
 
-    // Avatar state (local file preview + uploaded public URL)
     File? avatarFile;
     String? avatarPublicUrl;
     bool uploadingAvatar = false;
@@ -290,7 +467,6 @@ class _HomePageState extends State<HomePage> {
 
     String? _req(String? v) => (v?.trim().isEmpty ?? true) ? 'Required' : null;
 
-    // --- Avatar helpers ---
     Future<void> _pickImage(
         ImageSource source, void Function(void Function()) setLocal) async {
       try {
@@ -303,7 +479,7 @@ class _HomePageState extends State<HomePage> {
         if (picked == null) return;
         setLocal(() {
           avatarFile = File(picked.path);
-          avatarPublicUrl = null; // reset so we upload a fresh one
+          avatarPublicUrl = null;
         });
       } catch (e) {
         if (mounted) {
@@ -366,13 +542,12 @@ class _HomePageState extends State<HomePage> {
 
     Future<void> _ensureAvatarUploaded(
         void Function(void Function()) setLocal) async {
-      if (avatarFile == null || avatarPublicUrl != null)
-        return; // nothing to upload or already uploaded
+      if (avatarFile == null || avatarPublicUrl != null) return;
       try {
         setLocal(() => uploadingAvatar = true);
 
         final bytes = await avatarFile!.readAsBytes();
-        final storage = supa.Supabase.instance.client.storage.from('avatars');
+        final storage = _client.storage.from('avatars');
 
         final ts = DateTime.now().millisecondsSinceEpoch;
         final safeId =
@@ -419,7 +594,7 @@ class _HomePageState extends State<HomePage> {
                 key: formKey,
                 child: Column(
                   children: [
-                    // ===== Avatar preview + button =====
+                    // Avatar
                     CircleAvatar(
                       radius: 42,
                       backgroundColor: const Color(0xFF2A2F3A),
@@ -453,12 +628,10 @@ class _HomePageState extends State<HomePage> {
                     ),
                     const SizedBox(height: 14),
 
-                    // Name
                     _glassyField(
                         controller: nameC, label: 'Name', validator: _req),
                     const SizedBox(height: 10),
 
-                    // Age
                     _glassyField(
                       controller: ageC,
                       label: 'Age',
@@ -466,12 +639,10 @@ class _HomePageState extends State<HomePage> {
                     ),
                     const SizedBox(height: 10),
 
-                    // Address
                     _glassyField(
                         controller: addressC, label: 'Address', maxLines: 3),
                     const SizedBox(height: 10),
 
-                    // Weight (kg) -> triggers BMI
                     _glassyField(
                       controller: weightC,
                       label: 'Weight (kg)',
@@ -480,41 +651,6 @@ class _HomePageState extends State<HomePage> {
                     ),
                     const SizedBox(height: 10),
 
-                    // BMI (auto) read-only
-                    _glassyField(
-                      controller: bmiC,
-                      label: 'BMI (auto)',
-                      readOnly: true,
-                    ),
-                    const SizedBox(height: 10),
-
-                    // GymHistory
-                    _glassyField(
-                        controller: gymHistoryC,
-                        label: 'GymHistory',
-                        maxLines: 3),
-                    const SizedBox(height: 10),
-
-                    // Target
-                    _glassyField(
-                        controller: targetC, label: 'Target', maxLines: 3),
-                    const SizedBox(height: 10),
-
-                    // HealthHistory
-                    _glassyField(
-                        controller: healthHistoryC,
-                        label: 'HealthHistory',
-                        maxLines: 3),
-                    const SizedBox(height: 10),
-
-                    // SupplementHistory
-                    _glassyField(
-                        controller: supplementHistoryC,
-                        label: 'SupplementHistory',
-                        maxLines: 3),
-                    const SizedBox(height: 10),
-
-                    // Height (cm) -> triggers BMI
                     _glassyField(
                       controller: heightC,
                       label: 'Height (cm)',
@@ -523,22 +659,47 @@ class _HomePageState extends State<HomePage> {
                     ),
                     const SizedBox(height: 10),
 
-                    // Membership (Dropdown)
-                    _glassDropdown<String>(
-                      label: 'Membership',
-                      value: membershipValue,
-                      items: const ['Standard', 'Premium', 'VIP'],
-                      onChanged: (v) => setLocal(() {
-                        membershipValue = v;
-                        membershipC.text = v ?? '';
-                      }),
+                    _glassyField(
+                      controller: bmiC,
+                      label: 'BMI (auto)',
+                      readOnly: true,
                     ),
                     const SizedBox(height: 10),
 
-                    // ExercizeType (Dropdown)
+                    _glassyField(
+                        controller: gymHistoryC,
+                        label: 'GymHistory',
+                        maxLines: 3),
+                    const SizedBox(height: 10),
+
+                    _glassyField(
+                        controller: targetC, label: 'Target', maxLines: 3),
+                    const SizedBox(height: 10),
+
+                    _glassyField(
+                        controller: healthHistoryC,
+                        label: 'HealthHistory',
+                        maxLines: 3),
+                    const SizedBox(height: 10),
+
+                    _glassyField(
+                        controller: supplementHistoryC,
+                        label: 'SupplementHistory',
+                        maxLines: 3),
+                    const SizedBox(height: 10),
+
+                    _glassDropdown<String>(
+                      label: 'Membership',
+                      value: null,
+                      items: const ['Standard', 'Premium', 'VIP'],
+                      onChanged: (v) =>
+                          setLocal(() => membershipC.text = v ?? ''),
+                    ),
+                    const SizedBox(height: 10),
+
                     _glassDropdown<String>(
                       label: 'ExercizeType',
-                      value: exerciseValue,
+                      value: null,
                       items: const [
                         'Strength',
                         'Cardio',
@@ -546,26 +707,19 @@ class _HomePageState extends State<HomePage> {
                         'Yoga',
                         'Mixed'
                       ],
-                      onChanged: (v) => setLocal(() {
-                        exerciseValue = v;
-                        exercizeTypeC.text = v ?? '';
-                      }),
+                      onChanged: (v) =>
+                          setLocal(() => exercizeTypeC.text = v ?? ''),
                     ),
                     const SizedBox(height: 10),
 
-                    // Sex (Dropdown)
                     _glassDropdown<String>(
                       label: 'Sex',
-                      value: sexValue,
+                      value: null,
                       items: const ['Male', 'Female', 'Other'],
-                      onChanged: (v) => setLocal(() {
-                        sexValue = v;
-                        sexC.text = v ?? '';
-                      }),
+                      onChanged: (v) => setLocal(() => sexC.text = v ?? ''),
                     ),
                     const SizedBox(height: 10),
 
-                    // Email
                     _glassyField(
                       controller: emailC,
                       label: 'Email',
@@ -573,7 +727,6 @@ class _HomePageState extends State<HomePage> {
                     ),
                     const SizedBox(height: 10),
 
-                    // JoinDate (picker)
                     _glassyField(
                       controller: joinDateC,
                       label: 'JoinDate (YYYY-MM-DD)',
@@ -584,7 +737,6 @@ class _HomePageState extends State<HomePage> {
                     ),
                     const SizedBox(height: 10),
 
-                    // Phone
                     _glassyField(
                       controller: phoneC,
                       label: 'Phone',
@@ -609,7 +761,6 @@ class _HomePageState extends State<HomePage> {
               onPressed: () async {
                 if (!formKey.currentState!.validate()) return;
 
-                // Ensure GymID
                 final gymId = await _ensureGymId(gym);
                 if (gymId == null || gymId.isEmpty) {
                   if (mounted) {
@@ -620,7 +771,6 @@ class _HomePageState extends State<HomePage> {
                   return;
                 }
 
-                // Upload avatar if selected but not uploaded yet
                 await _ensureAvatarUploaded(setLocal);
 
                 try {
@@ -630,13 +780,14 @@ class _HomePageState extends State<HomePage> {
 
                   final payload = {
                     'GymID': gymId,
-                    'FireBaseID': widget.fireBaseId, // stable FK
+                    'FireBaseID': widget.fireBaseId,
                     'Name': nameC.text.trim(),
                     'Age': _toInt(ageC),
                     'Address': addressC.text.trim().isEmpty
                         ? null
                         : addressC.text.trim(),
                     'Weight': _toInt(weightC),
+                    'Height': _toInt(heightC),
                     'BMI': _toInt(bmiC),
                     'GymHistory': gymHistoryC.text.trim().isEmpty
                         ? null
@@ -650,7 +801,6 @@ class _HomePageState extends State<HomePage> {
                     'SupplementHistory': supplementHistoryC.text.trim().isEmpty
                         ? null
                         : supplementHistoryC.text.trim(),
-                    'Height': _toInt(heightC),
                     'Membership': membershipC.text.trim().isEmpty
                         ? null
                         : membershipC.text.trim(),
@@ -666,10 +816,10 @@ class _HomePageState extends State<HomePage> {
                     'Phone':
                         phoneC.text.trim().isEmpty ? null : phoneC.text.trim(),
                     if (avatarPublicUrl != null && avatarPublicUrl!.isNotEmpty)
-                      'PhotoURL': avatarPublicUrl, // <-- store public URL
+                      'PhotoURL': avatarPublicUrl,
                   };
 
-                  final inserted = await supa.Supabase.instance.client
+                  final inserted = await _client
                       .from('Users')
                       .insert(payload)
                       .select('UserID')
@@ -702,6 +852,8 @@ class _HomePageState extends State<HomePage> {
   }
   // ======= END Add Customer dialog =======
 
+  // ------------------ UI ------------------
+
   @override
   Widget build(BuildContext context) {
     final photoUrl = _avatarUrl(_user);
@@ -713,6 +865,14 @@ class _HomePageState extends State<HomePage> {
         elevation: 0,
         title: const Text("Gym Manager"),
         actions: [
+          IconButton(
+            tooltip: 'Sync',
+            icon: _syncing
+                ? const SizedBox(
+                    height: 22, width: 22, child: CircularProgressIndicator())
+                : const Icon(Icons.refresh),
+            onPressed: _syncing ? null : _syncGyms,
+          ),
           if (photoUrl != null && photoUrl.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(right: 8.0),
@@ -736,181 +896,197 @@ class _HomePageState extends State<HomePage> {
           IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
         ],
       ),
-      body: userGyms.isEmpty
-          ? Center(
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF2A2F3A),
-                    foregroundColor: Colors.white),
-                onPressed: () => _showGymForm(),
-                child: const Text("Add First Gym"),
-              ),
-            )
-          : Container(
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Color(0xFF0D0E11),
-                    Color(0xFF111318),
-                    Color(0xFF0F1115)
-                  ],
-                ),
-              ),
-              padding: const EdgeInsets.all(12.0),
-              child: Column(
+      body: RefreshIndicator(
+        onRefresh: _syncGyms,
+        child: userGyms.isEmpty
+            ? ListView(
                 children: [
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: ElevatedButton.icon(
-                      icon: const Icon(Icons.add),
-                      label: const Text("Add Another Gym"),
+                  const SizedBox(height: 180),
+                  Center(
+                    child: ElevatedButton(
                       style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFF2A2F3A),
                           foregroundColor: Colors.white),
                       onPressed: () => _showGymForm(),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Expanded(
-                    child: GridView.builder(
-                      gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 2,
-                        childAspectRatio: 3 / 3,
-                        crossAxisSpacing: 12,
-                        mainAxisSpacing: 12,
-                      ),
-                      itemCount: userGyms.length,
-                      itemBuilder: (context, index) {
-                        final gym = userGyms[index];
-                        return _GlassCard(
-                          child: Padding(
-                            padding: const EdgeInsets.all(12.0),
-                            child: LayoutBuilder(
-                              builder: (context, constraints) {
-                                return Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        const Icon(Icons.fitness_center,
-                                            color: Color(0xFF4F9CF9), size: 16),
-                                        const SizedBox(width: 4),
-                                        const Text(
-                                          "Gym",
-                                          style: TextStyle(
-                                            color: Colors.white70,
-                                            fontSize: 12,
-                                            letterSpacing: 0.6,
-                                          ),
-                                        ),
-                                        const Spacer(),
-                                        TextButton.icon(
-                                          onPressed: () =>
-                                              _navigateToDashboard(gym),
-                                          icon: const Icon(Icons.visibility,
-                                              size: 18),
-                                          label: const Text('View'),
-                                          style: TextButton.styleFrom(
-                                            foregroundColor: Colors.white,
-                                            textStyle: const TextStyle(
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                            padding: const EdgeInsets.symmetric(
-                                                horizontal: 8, vertical: 4),
-                                            minimumSize: Size.zero,
-                                            tapTargetSize: MaterialTapTargetSize
-                                                .shrinkWrap,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 8),
-                                    Expanded(
-                                      child: SingleChildScrollView(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              gym['name'] ?? '',
-                                              style: const TextStyle(
-                                                fontSize: 16,
-                                                fontWeight: FontWeight.bold,
-                                                color: Colors.white,
-                                              ),
-                                            ),
-                                            const SizedBox(height: 8),
-                                            Text(
-                                              "Location:",
-                                              style: TextStyle(
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.bold,
-                                                color: Colors.white
-                                                    .withValues(alpha: 0.7),
-                                              ),
-                                            ),
-                                            Text(
-                                              gym['location'] ?? '',
-                                              maxLines: 3,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: const TextStyle(
-                                                  fontSize: 12,
-                                                  color: Colors.white70),
-                                            ),
-                                            const SizedBox(height: 8),
-                                            Text(
-                                              "Capacity: ${gym['capacity'] ?? 0}",
-                                              style: const TextStyle(
-                                                  fontSize: 12,
-                                                  color: Colors.white70),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(height: 8),
-                                    Row(
-                                      mainAxisAlignment: MainAxisAlignment.end,
-                                      children: [
-                                        IconButton(
-                                          tooltip: 'Edit Gym',
-                                          icon: const Icon(Icons.edit,
-                                              color: Colors.white70, size: 18),
-                                          onPressed: () =>
-                                              _showGymForm(index: index),
-                                        ),
-                                        IconButton(
-                                          tooltip: 'Delete Gym',
-                                          icon: const Icon(Icons.delete,
-                                              color: Colors.white70, size: 18),
-                                          onPressed: () => _deleteGym(index),
-                                        ),
-                                        IconButton(
-                                          tooltip: 'Add Customer',
-                                          icon: const Icon(
-                                              Icons.person_add_alt_1,
-                                              color: Colors.white70,
-                                              size: 18),
-                                          onPressed: () =>
-                                              _showAddCustomerForm(gym),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                );
-                              },
-                            ),
-                          ),
-                        );
-                      },
+                      child: const Text("Add First Gym"),
                     ),
                   ),
                 ],
+              )
+            : Container(
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Color(0xFF0D0E11),
+                      Color(0xFF111318),
+                      Color(0xFF0F1115)
+                    ],
+                  ),
+                ),
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  children: [
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: ElevatedButton.icon(
+                        icon: const Icon(Icons.add),
+                        label: const Text("Add Another Gym"),
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF2A2F3A),
+                            foregroundColor: Colors.white),
+                        onPressed: () => _showGymForm(),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Expanded(
+                      child: GridView.builder(
+                        gridDelegate:
+                            const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          childAspectRatio: 3 / 3,
+                          crossAxisSpacing: 12,
+                          mainAxisSpacing: 12,
+                        ),
+                        itemCount: userGyms.length,
+                        itemBuilder: (context, index) {
+                          final gym = userGyms[index];
+                          return _GlassCard(
+                            child: Padding(
+                              padding: const EdgeInsets.all(12.0),
+                              child: LayoutBuilder(
+                                builder: (context, constraints) {
+                                  return Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          const Icon(Icons.fitness_center,
+                                              color: Color(0xFF4F9CF9),
+                                              size: 16),
+                                          const SizedBox(width: 4),
+                                          const Text(
+                                            "Gym",
+                                            style: TextStyle(
+                                              color: Colors.white70,
+                                              fontSize: 12,
+                                              letterSpacing: 0.6,
+                                            ),
+                                          ),
+                                          const Spacer(),
+                                          TextButton.icon(
+                                            onPressed: () =>
+                                                _navigateToDashboard(gym),
+                                            icon: const Icon(Icons.visibility,
+                                                size: 18),
+                                            label: const Text('View'),
+                                            style: TextButton.styleFrom(
+                                              foregroundColor: Colors.white,
+                                              textStyle: const TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      horizontal: 8,
+                                                      vertical: 4),
+                                              minimumSize: Size.zero,
+                                              tapTargetSize:
+                                                  MaterialTapTargetSize
+                                                      .shrinkWrap,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Expanded(
+                                        child: SingleChildScrollView(
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                gym['name'] ?? '',
+                                                style: const TextStyle(
+                                                  fontSize: 16,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.white,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 8),
+                                              Text(
+                                                "Location:",
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.white
+                                                      .withValues(alpha: 0.7),
+                                                ),
+                                              ),
+                                              Text(
+                                                gym['location'] ?? '',
+                                                maxLines: 3,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: const TextStyle(
+                                                    fontSize: 12,
+                                                    color: Colors.white70),
+                                              ),
+                                              const SizedBox(height: 8),
+                                              Text(
+                                                "Capacity: ${gym['capacity'] ?? 0}",
+                                                style: const TextStyle(
+                                                    fontSize: 12,
+                                                    color: Colors.white70),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.end,
+                                        children: [
+                                          IconButton(
+                                            tooltip: 'Edit Gym',
+                                            icon: const Icon(Icons.edit,
+                                                color: Colors.white70,
+                                                size: 18),
+                                            onPressed: () =>
+                                                _showGymForm(index: index),
+                                          ),
+                                          IconButton(
+                                            tooltip: 'Delete Gym',
+                                            icon: const Icon(Icons.delete,
+                                                color: Colors.white70,
+                                                size: 18),
+                                            onPressed: () => _deleteGym(index),
+                                          ),
+                                          IconButton(
+                                            tooltip: 'Add Customer',
+                                            icon: const Icon(
+                                                Icons.person_add_alt_1,
+                                                color: Colors.white70,
+                                                size: 18),
+                                            onPressed: () =>
+                                                _showAddCustomerForm(gym),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  );
+                                },
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
+      ),
     );
   }
 
@@ -964,7 +1140,7 @@ class _HomePageState extends State<HomePage> {
     required ValueChanged<T?> onChanged,
   }) {
     return DropdownButtonFormField<T>(
-      initialValue: value, // avoids deprecated `value:`
+      initialValue: value,
       items: items
           .map(
             (e) => DropdownMenuItem<T>(
@@ -980,12 +1156,12 @@ class _HomePageState extends State<HomePage> {
       style: const TextStyle(color: Colors.white),
       dropdownColor: const Color(0xFF111214),
       iconEnabledColor: Colors.white70,
-      decoration: const InputDecoration(
-        labelText: 'Select',
-        labelStyle: TextStyle(color: Colors.white70),
-        enabledBorder: OutlineInputBorder(
+      decoration: InputDecoration(
+        labelText: label,
+        labelStyle: const TextStyle(color: Colors.white70),
+        enabledBorder: const OutlineInputBorder(
             borderSide: BorderSide(color: Color(0xFF2A2F3A))),
-        focusedBorder: OutlineInputBorder(
+        focusedBorder: const OutlineInputBorder(
             borderSide: BorderSide(color: Color(0xFF4F9CF9))),
       ),
     );
