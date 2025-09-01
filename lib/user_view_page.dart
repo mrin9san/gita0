@@ -1,6 +1,7 @@
 import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as supa show Supabase;
+import 'package:url_launcher/url_launcher.dart'; // NEW
 
 class UserViewPage extends StatefulWidget {
   final String gymName;
@@ -155,7 +156,6 @@ class _UserViewPageState extends State<UserViewPage> {
       // treat as storage path, e.g. users/<uid>/<ts>.jpg
       try {
         final signed = await storage.createSignedUrl(s, 3600); // 1h
-        // Supabase 2.x returns a SignedUrl with .signedUrl
         final url = (signed as dynamic).signedUrl as String?;
         row[_resolvedKey] = url ?? s; // fallback to raw
       } catch (_) {
@@ -207,6 +207,44 @@ class _UserViewPageState extends State<UserViewPage> {
     });
   }
 
+  // ---------- value helpers ----------
+  String? _str(Map<String, dynamic> row, List<String> keys) {
+    for (final k in keys) {
+      final v = row[k];
+      if (v == null) continue;
+      final s = v.toString().trim();
+      if (s.isNotEmpty) return s;
+    }
+    return null;
+  }
+
+  int? _int(Map<String, dynamic> row, List<String> keys) {
+    final s = _str(row, keys);
+    if (s == null) return null;
+    return int.tryParse(s);
+  }
+
+  String _name(Map<String, dynamic> row) =>
+      _str(row, const ['Name', 'FullName', 'UserName']) ?? '-';
+
+  String _phone(Map<String, dynamic> row) =>
+      _str(row, const ['Phone', 'Mobile', 'Contact', 'PhoneNumber']) ?? '-';
+
+  String? _email(Map<String, dynamic> row) =>
+      _str(row, const ['Email', 'EmailID', 'EmailId', 'EmailAddress']);
+
+  String? _address(Map<String, dynamic> row) =>
+      _str(row, const ['Address', 'Addr', 'Location']);
+
+  int? _age(Map<String, dynamic> row) => _int(row, const ['Age']);
+
+  int? _bmi(Map<String, dynamic> row) => _int(row, const ['BMI']);
+
+  String? _target(Map<String, dynamic> row) => _str(row, const ['Target']);
+
+  String? _membership(Map<String, dynamic> row) =>
+      _str(row, const ['Membership']);
+
   String _initials(String name) {
     final parts = name.trim().split(RegExp(r'\s+'));
     if (parts.isEmpty) return '';
@@ -219,7 +257,6 @@ class _UserViewPageState extends State<UserViewPage> {
     if (resolved != null && resolved.toString().trim().isNotEmpty) {
       return resolved.toString().trim();
     }
-    // fallback to raw (http/s url case)
     for (final key in const [
       'PhotoURL',
       'PhotoUrl',
@@ -237,12 +274,28 @@ class _UserViewPageState extends State<UserViewPage> {
     return null;
   }
 
-  String _phone(Map<String, dynamic> row) {
-    for (final key in const ['Phone', 'Mobile', 'Contact', 'PhoneNumber']) {
-      final v = row[key];
-      if (v != null && v.toString().trim().isNotEmpty) return v.toString();
-    }
-    return '-';
+  // ---------- intents (call & email) ----------
+  Future<void> _launchPhone(String phoneRaw) async {
+    final phone = phoneRaw.trim();
+    if (phone.isEmpty || phone == '-') return;
+    final uri = Uri(scheme: 'tel', path: phone);
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  Future<void> _launchEmail(String to) async {
+    final email = to.trim();
+    if (email.isEmpty) return;
+    final subject = 'Regarding ${widget.gymName} membership';
+    final body = 'Hi,';
+    final uri = Uri(
+      scheme: 'mailto',
+      path: email,
+      queryParameters: {
+        'subject': subject,
+        'body': body,
+      },
+    );
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
   void _openPhotoViewer(String url, String name) {
@@ -306,6 +359,8 @@ class _UserViewPageState extends State<UserViewPage> {
       ),
     );
   }
+
+  // ---------- UI ----------
 
   @override
   Widget build(BuildContext context) {
@@ -387,7 +442,7 @@ class _UserViewPageState extends State<UserViewPage> {
                           ),
                           const SizedBox(height: 12),
 
-                          // Users list: photo (left) + two lines (name, phone)
+                          // Users list: richer row
                           Container(
                             decoration: BoxDecoration(
                               color: const Color(0xFF1A1C23),
@@ -413,41 +468,151 @@ class _UserViewPageState extends State<UserViewPage> {
                                     ),
                                     itemBuilder: (context, index) {
                                       final row = _filtered[index];
-                                      final name =
-                                          (row['Name'] ?? '-').toString();
+                                      final name = _name(row);
                                       final phone = _phone(row);
+                                      final email = _email(row);
                                       final photo = _photoUrl(row);
 
-                                      return ListTile(
+                                      final age = _age(row);
+                                      final addr = _address(row);
+                                      final bmi = _bmi(row);
+                                      final target = _target(row);
+                                      final membership = _membership(row);
+
+                                      return InkWell(
                                         onTap: () {
                                           if (photo != null &&
                                               photo.isNotEmpty) {
                                             _openPhotoViewer(photo, name);
                                           }
                                         },
-                                        leading: _UserAvatar(
-                                          name: name,
-                                          photoUrl: photo,
-                                          heroTag: photo ?? name,
-                                        ),
-                                        title: Text(
-                                          name,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.w600,
+                                        child: Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 12, vertical: 10),
+                                          child: Row(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              // Avatar
+                                              _UserAvatar(
+                                                name: name,
+                                                photoUrl: photo,
+                                                heroTag: photo ?? name,
+                                              ),
+                                              const SizedBox(width: 12),
+
+                                              // Main content
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  children: [
+                                                    // Top line: Name + actions
+                                                    Row(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .center,
+                                                      children: [
+                                                        Expanded(
+                                                          child: Text(
+                                                            name,
+                                                            style:
+                                                                const TextStyle(
+                                                              color:
+                                                                  Colors.white,
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .w600,
+                                                              fontSize: 16,
+                                                            ),
+                                                            overflow:
+                                                                TextOverflow
+                                                                    .ellipsis,
+                                                          ),
+                                                        ),
+                                                        // Actions: call & email
+                                                        if (phone != '-' &&
+                                                            phone
+                                                                .trim()
+                                                                .isNotEmpty)
+                                                          IconButton(
+                                                            tooltip: 'Call',
+                                                            icon: const Icon(
+                                                              Icons.phone,
+                                                              color: Colors
+                                                                  .white70,
+                                                              size: 20,
+                                                            ),
+                                                            onPressed: () =>
+                                                                _launchPhone(
+                                                                    phone),
+                                                          ),
+                                                        if (email != null &&
+                                                            email
+                                                                .trim()
+                                                                .isNotEmpty)
+                                                          IconButton(
+                                                            tooltip: 'Email',
+                                                            icon: const Icon(
+                                                              Icons
+                                                                  .email_outlined,
+                                                              color: Colors
+                                                                  .white70,
+                                                              size: 20,
+                                                            ),
+                                                            onPressed: () =>
+                                                                _launchEmail(
+                                                                    email),
+                                                          ),
+                                                      ],
+                                                    ),
+
+                                                    const SizedBox(height: 6),
+
+                                                    // Phone inline (small)
+                                                    if (phone != '-' &&
+                                                        phone.trim().isNotEmpty)
+                                                      Text(
+                                                        'Phone: $phone',
+                                                        style: const TextStyle(
+                                                            color:
+                                                                Colors.white70,
+                                                            fontSize: 12),
+                                                      ),
+
+                                                    // Labeled details (only show if present)
+                                                    const SizedBox(height: 6),
+                                                    Wrap(
+                                                      runSpacing: 6,
+                                                      spacing: 12,
+                                                      children: [
+                                                        if (age != null)
+                                                          _kvPill(
+                                                              'Age', '$age'),
+                                                        if (addr != null)
+                                                          _kvPill(
+                                                            'Address',
+                                                            addr,
+                                                            maxWidth: 220,
+                                                          ),
+                                                        if (bmi != null)
+                                                          _kvPill(
+                                                              'BMI', '$bmi'),
+                                                        if (target != null)
+                                                          _kvPill(
+                                                              'Target', target,
+                                                              maxWidth: 220),
+                                                        if (membership != null)
+                                                          _kvPill('Membership',
+                                                              membership),
+                                                      ],
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ],
                                           ),
-                                          overflow: TextOverflow.ellipsis,
                                         ),
-                                        subtitle: Text(
-                                          phone,
-                                          style: const TextStyle(
-                                              color: Colors.white70),
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                        dense: false,
-                                        contentPadding:
-                                            const EdgeInsets.symmetric(
-                                                horizontal: 12, vertical: 6),
                                       );
                                     },
                                   ),
@@ -457,6 +622,33 @@ class _UserViewPageState extends State<UserViewPage> {
                     ),
     );
   }
+}
+
+/// A small labeled pill like:  Label: Value
+Widget _kvPill(String label, String value, {double? maxWidth}) {
+  final text = '$label: $value';
+  final child = Text(
+    text,
+    maxLines: 2,
+    overflow: TextOverflow.ellipsis,
+    style: const TextStyle(
+      color: Colors.white,
+      fontSize: 12.5,
+    ),
+  );
+
+  return Container(
+    constraints: maxWidth != null
+        ? BoxConstraints(maxWidth: maxWidth)
+        : const BoxConstraints(),
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    decoration: BoxDecoration(
+      color: const Color(0xFF111214),
+      borderRadius: BorderRadius.circular(999),
+      border: Border.all(color: const Color(0x22FFFFFF), width: 1),
+    ),
+    child: child,
+  );
 }
 
 /// Active tab = white bg + black text; inactive = glassy
@@ -491,9 +683,13 @@ class GlassLabelButton extends StatelessWidget {
               ),
             ],
           ),
-          child: const Text(
-            '',
-            // We'll overlay the label below; alternately you can put [text] here directly.
+          child: Text(
+            text, // FIXED: show label for active tab too
+            style: const TextStyle(
+              color: Colors.black87,
+              fontWeight: FontWeight.w700,
+              fontSize: 13.5,
+            ),
           ),
         ),
       );
