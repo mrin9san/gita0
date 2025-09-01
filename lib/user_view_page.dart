@@ -274,7 +274,7 @@ class _UserViewPageState extends State<UserViewPage> {
     return null;
   }
 
-  // ---------- intents (call & email) ----------
+  // ---------- intents (call, email, WhatsApp) ----------
   Future<void> _launchPhone(String phoneRaw) async {
     final phone = phoneRaw.trim();
     if (phone.isEmpty || phone == '-') return;
@@ -296,6 +296,46 @@ class _UserViewPageState extends State<UserViewPage> {
       },
     );
     await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  String _normalizePhoneForWhatsApp(String raw) {
+    // Keep '+' if present; else strip non-digits and add default +91 for 10-digit Indian numbers.
+    String s = raw.trim();
+    if (s.isEmpty || s == '-') return '';
+    if (s.startsWith('+')) {
+      return '+' + s.replaceAll(RegExp(r'[^\d]'), '');
+    }
+    String digits = s.replaceAll(RegExp(r'\D'), '');
+    digits = digits.replaceFirst(RegExp(r'^0+'), '');
+    if (digits.length == 10) digits = '91$digits'; // change default as needed
+    return digits.isEmpty ? '' : '+$digits';
+  }
+
+  Future<void> _launchWhatsApp(String phoneRaw, {String? message}) async {
+    final phone = _normalizePhoneForWhatsApp(phoneRaw);
+    if (phone.isEmpty) return;
+
+    final text = message ?? 'Hi from ${widget.gymName}';
+    final enc = Uri.encodeComponent(text);
+
+    // 1) Try regular WhatsApp
+    final wa = Uri.parse('whatsapp://send?phone=$phone&text=$enc');
+    if (await canLaunchUrl(wa)) {
+      await launchUrl(wa, mode: LaunchMode.externalApplication);
+      return;
+    }
+
+    // 2) Try WhatsApp Business
+    final wab = Uri.parse('whatsapp-business://send?phone=$phone&text=$enc');
+    if (await canLaunchUrl(wab)) {
+      await launchUrl(wab, mode: LaunchMode.externalApplication);
+      return;
+    }
+
+    // 3) Fallback to web universal link
+    final web =
+        Uri.parse('https://wa.me/${phone.replaceAll('+', '')}?text=$enc');
+    await launchUrl(web, mode: LaunchMode.externalApplication);
   }
 
   void _openPhotoViewer(String url, String name) {
@@ -530,7 +570,7 @@ class _UserViewPageState extends State<UserViewPage> {
                                                                     .ellipsis,
                                                           ),
                                                         ),
-                                                        // Actions: call & email
+                                                        // Actions: call, WhatsApp & email
                                                         if (phone != '-' &&
                                                             phone
                                                                 .trim()
@@ -546,6 +586,25 @@ class _UserViewPageState extends State<UserViewPage> {
                                                             onPressed: () =>
                                                                 _launchPhone(
                                                                     phone),
+                                                          ),
+                                                        if (phone != '-' &&
+                                                            phone
+                                                                .trim()
+                                                                .isNotEmpty)
+                                                          IconButton(
+                                                            tooltip: 'WhatsApp',
+                                                            icon: const Icon(
+                                                              Icons.chat,
+                                                              color: Colors
+                                                                  .white70,
+                                                              size: 20,
+                                                            ),
+                                                            onPressed: () =>
+                                                                _launchWhatsApp(
+                                                              phone,
+                                                              message:
+                                                                  'Hi $name, this is ${widget.gymName}',
+                                                            ),
                                                           ),
                                                         if (email != null &&
                                                             email
