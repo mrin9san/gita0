@@ -1,16 +1,14 @@
 import 'dart:io';
+import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'renew_subscription_page.dart';
 
-/// Firebase-free profile page that:
-/// - Uses a stable FireBaseID (FK for Gyms/Users)
-/// - Loads/Saves Name & Location in `Fire` (by FireBaseID)
-/// - (Optional) Uploads avatar to Storage bucket `avatars` and saves PhotoURL
 class ProfilePage extends StatefulWidget {
-  final String? fireBaseId; // Pass from HomePage for best results
-
+  final String? fireBaseId;
   const ProfilePage({super.key, this.fireBaseId});
 
   @override
@@ -21,15 +19,18 @@ class _ProfilePageState extends State<ProfilePage> {
   final _nameController = TextEditingController();
   final _locationController = TextEditingController();
   final _emailController = TextEditingController();
-
+  static const String _appVersion = 'v1.0.0';
   bool _isEditing = false;
   bool _isLoading = true;
   bool _isSaving = false;
 
   supa.User? _user;
-  String? _fireBaseId; // resolved Fire.FireBaseID
-  String? _photoUrl; // Fire.PhotoURL or auth.user_metadata.avatar_url
-  File? _imageFile;
+  String? _fireBaseId;
+  String? _photoDisplayUrl; // for UI (signed/public)
+  String? _photoStoragePath; // we save this to Fire.PhotoURL
+  File? _localImageFile;
+
+  String _subscriptionLabel = '—'; // system-generated
 
   @override
   void initState() {
@@ -46,11 +47,8 @@ class _ProfilePageState extends State<ProfilePage> {
       return;
     }
 
-    // Basic auth info
     final email = _user!.email ?? '';
     _emailController.text = email;
-
-    // Prefer the fireBaseId provided by caller
     _fireBaseId = widget.fireBaseId;
 
     try {
@@ -59,70 +57,172 @@ class _ProfilePageState extends State<ProfilePage> {
       if (_fireBaseId != null && _fireBaseId!.isNotEmpty) {
         row = await client
             .from('Fire')
-            .select('FireBaseID, Name, Location, PhotoURL')
+            .select('FireBaseID, Name, Location, EmailID, PhotoURL')
             .eq('FireBaseID', _fireBaseId!)
             .maybeSingle();
       } else if (email.isNotEmpty) {
         row = await client
             .from('Fire')
-            .select('FireBaseID, Name, Location, PhotoURL')
+            .select('FireBaseID, Name, Location, EmailID, PhotoURL')
             .eq('EmailID', email)
             .maybeSingle();
         if (row != null) _fireBaseId = row['FireBaseID'] as String?;
       }
 
-      // Fill fields
       final md = _user!.userMetadata ?? {};
       final metaName = (md['name'] as String?) ?? '';
       final metaAvatar =
           (md['avatar_url'] as String?) ?? (md['picture'] as String?);
 
       _nameController.text =
-          (row?['Name'] as String?)?.trim().isNotEmpty == true
+          ((row?['Name'] as String?)?.trim().isNotEmpty ?? false)
               ? (row!['Name'] as String)
               : metaName;
 
       _locationController.text = (row?['Location'] as String?) ?? '';
-      _photoUrl = (row?['PhotoURL'] as String?) ?? metaAvatar;
+      _emailController.text = (row?['EmailID'] as String?) ?? email;
+
+      final rawPhoto = (row?['PhotoURL'] as String?);
+      if (rawPhoto != null && rawPhoto.trim().isNotEmpty) {
+        _photoStoragePath = rawPhoto.trim();
+        _photoDisplayUrl = await _resolveDisplayUrlFromPath(_photoStoragePath!);
+      } else {
+        _photoDisplayUrl = metaAvatar;
+      }
     } catch (e) {
       debugPrint('⚠️ Failed to load Fire row: $e');
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
+    }
+
+    // Best-effort subscription label
+    _computeSubscriptionLabel();
+  }
+
+  Future<void> _computeSubscriptionLabel() async {
+    try {
+      if (_fireBaseId == null || _fireBaseId!.isEmpty) return;
+      final client = supa.Supabase.instance.client;
+
+      // Example logic: number of gyms owned by this FireBaseID → plan
+      final gyms = await client
+          .from('Gyms')
+          .select('GymID')
+          .eq('FireBaseID', _fireBaseId!);
+
+      final gymCount = (gyms is List) ? gyms.length : 0;
+
+      String label;
+      if (gymCount <= 1) {
+        label = 'Free';
+      } else if (gymCount <= 3) {
+        label = 'Starter';
+      } else {
+        label = 'Pro';
+      }
+
+      if (mounted) setState(() => _subscriptionLabel = label);
+    } catch (_) {
+      // leave default
     }
   }
 
-  Future<void> _pickImage() async {
-    final picked = await ImagePicker()
-        .pickImage(source: ImageSource.gallery, imageQuality: 85);
+  Future<String?> _resolveDisplayUrlFromPath(String pathOrUrl) async {
+    if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
+      return pathOrUrl;
+    }
+    try {
+      final storage = supa.Supabase.instance.client.storage.from('avatars');
+      final signed = await storage.createSignedUrl(pathOrUrl, 3600);
+      final url = (signed as dynamic).signedUrl as String?;
+      return url ?? storage.getPublicUrl(pathOrUrl);
+    } catch (_) {
+      return supa.Supabase.instance.client.storage
+          .from('avatars')
+          .getPublicUrl(pathOrUrl);
+    }
+  }
+
+  Future<void> _choosePhoto() async {
+    if (!_isEditing) return;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF111214),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
+      ),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _sheetTile(
+              icon: Icons.photo,
+              label: 'Choose from Gallery',
+              onTap: () async {
+                Navigator.pop(context);
+                await _pickImage(ImageSource.gallery);
+              },
+            ),
+            _sheetTile(
+              icon: Icons.photo_camera,
+              label: 'Take a Photo',
+              onTap: () async {
+                Navigator.pop(context);
+                await _pickImage(ImageSource.camera);
+              },
+            ),
+            const SizedBox(height: 6),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sheetTile(
+      {required IconData icon,
+      required String label,
+      required VoidCallback onTap}) {
+    return ListTile(
+      leading: Icon(icon, color: Colors.white),
+      title: Text(label, style: const TextStyle(color: Colors.white)),
+      onTap: onTap,
+    );
+  }
+
+  Future<void> _pickImage(ImageSource source) async {
+    final picked =
+        await ImagePicker().pickImage(source: source, imageQuality: 85);
     if (picked != null) {
-      setState(() {
-        _imageFile = File(picked.path);
-      });
+      setState(() => _localImageFile = File(picked.path));
     }
   }
 
-  /// Uploads avatar to `avatars/<FireBaseID>/avatar.jpg` (upsert).
-  /// Returns public URL (if bucket is public) or null on failure.
-  Future<String?> _uploadAvatarIfNeeded() async {
-    if (_imageFile == null || _fireBaseId == null) return null;
+  Future<(String? displayUrl, String? storagePath)>
+      _uploadAvatarIfNeeded() async {
+    if (_localImageFile == null || _fireBaseId == null) return (null, null);
     try {
       final client = supa.Supabase.instance.client;
-      final path = '${_fireBaseId!}/avatar.jpg';
+      final storage = client.storage.from('avatars');
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final path = '${_fireBaseId!}/avatar_$ts.jpg';
 
-      await client.storage.from('avatars').upload(
-            path,
-            _imageFile!,
-            fileOptions: const supa.FileOptions(
-              cacheControl: '3600',
-              upsert: true,
-            ),
-          );
+      await storage.upload(
+        path,
+        _localImageFile!,
+        fileOptions: const supa.FileOptions(cacheControl: '3600', upsert: true),
+      );
 
-      final publicUrl = client.storage.from('avatars').getPublicUrl(path);
-      return publicUrl;
+      String? displayUrl;
+      try {
+        final signed = await storage.createSignedUrl(path, 3600);
+        displayUrl = (signed as dynamic).signedUrl as String?;
+      } catch (_) {
+        displayUrl = storage.getPublicUrl(path);
+      }
+      return (displayUrl, path);
     } catch (e) {
       debugPrint('❌ Avatar upload failed: $e');
-      return null;
+      return (null, null);
     }
   }
 
@@ -140,27 +240,26 @@ class _ProfilePageState extends State<ProfilePage> {
       final client = supa.Supabase.instance.client;
       final name = _nameController.text.trim();
       final location = _locationController.text.trim();
+      final emailId = _emailController.text
+          .trim(); // read-only UI, but we still persist if changed programmatically
 
-      // 1) Upload avatar (optional)
-      final uploadedUrl = await _uploadAvatarIfNeeded();
-      if (uploadedUrl != null) {
-        _photoUrl = uploadedUrl;
+      final (displayUrl, storagePath) = await _uploadAvatarIfNeeded();
+      if (displayUrl != null) _photoDisplayUrl = displayUrl;
+      if (storagePath != null) _photoStoragePath = storagePath;
+
+      final md = <String, dynamic>{'name': name};
+      if (_photoDisplayUrl != null && _photoDisplayUrl!.isNotEmpty) {
+        md['avatar_url'] = _photoDisplayUrl!;
       }
+      await client.auth.updateUser(supa.UserAttributes(data: md));
 
-      // 2) Update auth user metadata (name + avatar_url)
-      final data = <String, dynamic>{'name': name};
-      if (_photoUrl != null && _photoUrl!.isNotEmpty) {
-        data['avatar_url'] = _photoUrl!;
-      }
-      await client.auth.updateUser(supa.UserAttributes(data: data));
-
-      // 3) Update Fire row (NEVER update FireBaseID)
       final updateMap = <String, dynamic>{
         'Name': name,
         'Location': location,
+        'EmailID': emailId,
       };
-      if (_photoUrl != null && _photoUrl!.isNotEmpty) {
-        updateMap['PhotoURL'] = _photoUrl!;
+      if (_photoStoragePath != null && _photoStoragePath!.isNotEmpty) {
+        updateMap['PhotoURL'] = _photoStoragePath!;
       }
 
       await client
@@ -169,16 +268,23 @@ class _ProfilePageState extends State<ProfilePage> {
           .eq('FireBaseID', _fireBaseId!);
 
       if (mounted) {
-        setState(() => _isEditing = false);
+        setState(() {
+          _isEditing = false;
+          _localImageFile = null;
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Profile saved ✅')),
         );
       }
     } catch (e) {
+      final msg = e.toString();
+      final pretty = msg.contains('duplicate key') || msg.contains('unique')
+          ? 'EmailID already exists for another user.'
+          : 'Failed to save profile: $msg';
       debugPrint('❌ Save profile failed: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to save profile: $e')),
+          SnackBar(content: Text(pretty)),
         );
       }
     } finally {
@@ -187,124 +293,469 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Future<void> _logout() async {
-    // Supabase session
     try {
       await supa.Supabase.instance.client.auth.signOut();
     } catch (_) {}
-
-    // Google account cache -> force account chooser next login
     try {
       final google = GoogleSignIn();
       await google.disconnect();
       await google.signOut();
     } catch (_) {}
-
     if (mounted) {
       Navigator.popUntil(context, (route) => route.isFirst);
     }
   }
 
   ImageProvider<Object>? _currentAvatarProvider() {
-    if (_imageFile != null) return FileImage(_imageFile!);
-    if (_photoUrl != null && _photoUrl!.isNotEmpty) {
-      return NetworkImage(_photoUrl!);
+    if (_localImageFile != null) return FileImage(_localImageFile!);
+    if (_photoDisplayUrl != null && _photoDisplayUrl!.isNotEmpty) {
+      return NetworkImage(_photoDisplayUrl!);
     }
     return null;
   }
 
+  void _cancelEditsAndReload() {
+    setState(() {
+      _isEditing = false;
+      _localImageFile = null;
+    });
+    _initAndLoad();
+  }
+
+  // ---------- external actions ----------
+  Future<void> _launchEmail(
+      {String to = 'anitronassam@gmail.com',
+      String subject = '',
+      String body = ''}) async {
+    final uri = Uri(
+      scheme: 'mailto',
+      path: to,
+      queryParameters: {
+        if (subject.isNotEmpty) 'subject': subject,
+        if (body.isNotEmpty) 'body': body,
+      },
+    );
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  Future<void> _launchWhatsApp(String phone, {String message = 'Hi'}) async {
+    // expect full international format like +917099187140
+    final enc = Uri.encodeComponent(message);
+    final wa = Uri.parse('whatsapp://send?phone=$phone&text=$enc');
+    if (await canLaunchUrl(wa)) {
+      await launchUrl(wa, mode: LaunchMode.externalApplication);
+      return;
+    }
+    final wab = Uri.parse('whatsapp-business://send?phone=$phone&text=$enc');
+    if (await canLaunchUrl(wab)) {
+      await launchUrl(wab, mode: LaunchMode.externalApplication);
+      return;
+    }
+    final web =
+        Uri.parse('https://wa.me/${phone.replaceAll('+', '')}?text=$enc');
+    await launchUrl(web, mode: LaunchMode.externalApplication);
+  }
+
+  // ---------------- UI ----------------
+
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('User Profile')),
-        body: const Center(child: CircularProgressIndicator()),
-      );
-    }
+    final bg = const Color(0xFF0F1116);
 
-    if (_user == null) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('User Profile')),
-        body: const Center(child: Text('No user is logged in.')),
-      );
-    }
-
-    final avatar = _currentAvatarProvider();
+    final titleActions = <Widget>[
+      if (_isEditing) ...[
+        IconButton(
+          tooltip: 'Save',
+          onPressed: _isSaving ? null : _saveProfile,
+          icon: _isSaving
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white))
+              : const Icon(Icons.check, color: Colors.white),
+        ),
+        IconButton(
+          tooltip: 'Cancel',
+          onPressed: _isSaving ? null : _cancelEditsAndReload,
+          icon: const Icon(Icons.close, color: Colors.white),
+        ),
+      ] else ...[
+        IconButton(
+          tooltip: 'Edit',
+          onPressed: () => setState(() => _isEditing = true),
+          icon: const Icon(Icons.edit, color: Colors.white),
+        ),
+        IconButton(
+          tooltip: 'Sign out',
+          onPressed: _logout,
+          icon: const Icon(Icons.logout, color: Colors.white),
+        ),
+      ],
+    ];
 
     return Scaffold(
+      backgroundColor: bg,
       appBar: AppBar(
-        title: const Text('User Profile'),
-        actions: [
-          IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
-        ],
+        backgroundColor: bg,
+        elevation: 0,
+        centerTitle: true,
+        title: const Text('User Profile',
+            style: TextStyle(color: Colors.white, fontSize: 18)),
+        iconTheme: const IconThemeData(color: Colors.white),
+        actions: titleActions,
       ),
-      body: AbsorbPointer(
-        absorbing: _isSaving,
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            children: [
-              Center(
-                child: Stack(
-                  children: [
-                    CircleAvatar(
-                      radius: 50,
-                      backgroundImage: avatar,
-                      child: avatar == null
-                          ? const Icon(Icons.person, size: 50)
-                          : null,
-                    ),
-                    if (_isEditing)
-                      Positioned(
-                        bottom: 0,
-                        right: 0,
-                        child: InkWell(
-                          onTap: _pickImage,
-                          child: const CircleAvatar(
-                            radius: 18,
-                            backgroundColor: Colors.blue,
-                            child: Icon(Icons.camera_alt, color: Colors.white),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _user == null
+              ? const Center(
+                  child: Text('No user is logged in.',
+                      style: TextStyle(color: Colors.white70)))
+              : SafeArea(
+                  top: true,
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        // --- HEADER (avatar + name small) ---
+                        _HeaderSection(
+                          isEditing: _isEditing,
+                          onChangePhoto: _choosePhoto,
+                          avatar: _currentAvatarProvider(),
+                          displayName: _nameController.text.trim().isEmpty
+                              ? 'User'
+                              : _nameController.text.trim(),
+                        ),
+                        const SizedBox(height: 14),
+
+                        // --- PROFILE FIELDS (compact) ---
+                        _Card(
+                          child: Column(
+                            children: [
+                              _field(
+                                label: 'Name',
+                                controller: _nameController,
+                                icon: Icons.person,
+                                editable: _isEditing && !_isSaving,
+                              ),
+                              _field(
+                                label: 'EmailID',
+                                controller: _emailController,
+                                icon: Icons.alternate_email,
+                                editable: false, // READ-ONLY
+                                keyboardType: TextInputType.emailAddress,
+                              ),
+                              _field(
+                                label: 'Location',
+                                controller: _locationController,
+                                icon: Icons.location_on_outlined,
+                                editable: _isEditing && !_isSaving,
+                              ),
+                            ],
                           ),
                         ),
-                      ),
-                  ],
+
+                        const SizedBox(height: 12),
+
+                        // --- APP SETTINGS ---
+                        // --- APP SETTINGS ---
+                        _Card(
+                          title: 'App Settings',
+                          child: Column(
+                            children: [
+                              _settingsTile(
+                                icon: Icons.support_agent_outlined,
+                                label: 'Help & Support',
+                                onTap: () => _openHelpSupportSheet(),
+                              ),
+                              _divider(),
+                              _settingsTile(
+                                icon: Icons.bug_report_outlined,
+                                label: 'Report an issue',
+                                onTap: () => _launchEmail(
+                                  subject:
+                                      'Issue report from ${_nameController.text.trim().isEmpty ? 'User' : _nameController.text.trim()}',
+                                  body: 'Describe the issue here...',
+                                ),
+                              ),
+                              _divider(),
+                              _settingsTile(
+                                icon: Icons.workspace_premium_outlined,
+                                label: 'Your subscription',
+                                trailing: Text(
+                                  _subscriptionLabel,
+                                  style: const TextStyle(
+                                      color: Colors.white70, fontSize: 13),
+                                ),
+                                onTap: () {
+                                  showDialog(
+                                    context: context,
+                                    builder: (_) => AlertDialog(
+                                      backgroundColor: const Color(0xFF161922),
+                                      title: const Text('Subscription',
+                                          style:
+                                              TextStyle(color: Colors.white)),
+                                      content: Text(
+                                        'Current plan: $_subscriptionLabel',
+                                        style: const TextStyle(
+                                            color: Colors.white70),
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context),
+                                            child: const Text('OK')),
+                                      ],
+                                    ),
+                                  );
+                                },
+                              ),
+                              _divider(),
+                              _settingsTile(
+                                icon: Icons.autorenew_outlined,
+                                label: 'Renew / Update Subscription',
+                                onTap: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => RenewSubscriptionPage(
+                                        fireBaseId:
+                                            _fireBaseId, // we’ll resolve gyms from this
+                                        // preselectedGymId: '...optional...', // pass if you have a selected gym
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                              _divider(),
+                              // NEW: Version row (non-tappable)
+                              _settingsTile(
+                                icon: Icons.info_outline,
+                                label: 'Version',
+                                trailing: const Text('v1.0.0',
+                                    style: TextStyle(
+                                        color: Colors.white70, fontSize: 13)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 16),
-              _infoField('Name', _nameController, editable: true),
-              _infoField('Email', _emailController, editable: false),
-              _infoField('Location', _locationController, editable: true),
-              const SizedBox(height: 20),
-              ElevatedButton.icon(
-                icon: Icon(_isEditing ? Icons.save : Icons.edit),
-                label: Text(_isEditing
-                    ? (_isSaving ? 'Saving...' : 'Save')
-                    : 'Edit Profile'),
-                onPressed: () async {
-                  if (_isEditing) {
-                    await _saveProfile();
-                  } else {
-                    setState(() => _isEditing = true);
-                  }
-                },
-              ),
-            ],
+    );
+  }
+
+  Widget _field({
+    required String label,
+    required TextEditingController controller,
+    required IconData icon,
+    bool editable = true,
+    TextInputType? keyboardType,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: TextField(
+        controller: controller,
+        enabled: editable,
+        keyboardType: keyboardType,
+        style: const TextStyle(color: Colors.white, fontSize: 14),
+        decoration: InputDecoration(
+          labelText: label,
+          labelStyle: const TextStyle(color: Colors.white70, fontSize: 13),
+          prefixIcon: Icon(icon, color: Colors.white70, size: 18),
+          isDense: true,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          filled: true,
+          fillColor: const Color(0x141A1C23),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(
+                color: const Color(0xFFFFFFFF).withValues(alpha: 0.10)),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(
+                color: const Color(0xFFFFFFFF).withValues(alpha: 0.08)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(
+                color: const Color(0xFFFFFFFF).withValues(alpha: 0.20)),
           ),
         ),
       ),
     );
   }
 
-  Widget _infoField(String label, TextEditingController controller,
-      {required bool editable}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: TextField(
-        controller: controller,
-        enabled: editable && _isEditing,
-        decoration: InputDecoration(
-          labelText: label,
-          border: const OutlineInputBorder(),
+  Widget _settingsTile({
+    required IconData icon,
+    required String label,
+    VoidCallback? onTap,
+    Widget? trailing,
+  }) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+      dense: true,
+      leading: Icon(icon, color: Colors.white70, size: 20),
+      title: Text(label,
+          style: const TextStyle(
+              color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500)),
+      trailing:
+          trailing ?? const Icon(Icons.chevron_right, color: Colors.white38),
+      onTap: onTap,
+    );
+  }
+
+  Widget _divider() =>
+      Divider(height: 1, color: Colors.white.withValues(alpha: 0.08));
+
+  void _openHelpSupportSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF111214),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
+      ),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            const Text('Help & Support',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            _sheetTile(
+              icon: Icons.email_outlined,
+              label: 'Email support',
+              onTap: () {
+                Navigator.pop(context);
+                _launchEmail(
+                  subject: 'Support request',
+                  body: 'Hi team,\n\nI need help with...',
+                );
+              },
+            ),
+            _sheetTile(
+              icon: Icons.chat_outlined,
+              label: 'WhatsApp',
+              onTap: () {
+                Navigator.pop(context);
+                _launchWhatsApp('+917099187140',
+                    message: 'Hi, I need support.');
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
         ),
+      ),
+    );
+  }
+}
+
+class _HeaderSection extends StatelessWidget {
+  final bool isEditing;
+  final VoidCallback onChangePhoto;
+  final ImageProvider<Object>? avatar;
+  final String displayName;
+
+  const _HeaderSection({
+    required this.isEditing,
+    required this.onChangePhoto,
+    required this.avatar,
+    required this.displayName,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final sub =
+        TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 12.5);
+
+    return Column(
+      children: [
+        Stack(
+          children: [
+            CircleAvatar(
+              radius: 44,
+              backgroundImage: avatar,
+              backgroundColor: const Color(0xFF2A2F3A),
+              child: avatar == null
+                  ? const Icon(Icons.person, size: 44, color: Colors.white70)
+                  : null,
+            ),
+            if (isEditing)
+              Positioned(
+                right: 0,
+                bottom: 0,
+                child: InkWell(
+                  onTap: onChangePhoto,
+                  borderRadius: BorderRadius.circular(18),
+                  child: Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF3B82F6),
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                    child: const Icon(Icons.camera_alt,
+                        color: Colors.white, size: 16),
+                  ),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          displayName,
+          style: const TextStyle(
+              color: Colors.white, fontWeight: FontWeight.w600, fontSize: 16),
+        ),
+        if (isEditing) ...[
+          const SizedBox(height: 4),
+          Text('Tap the camera to change photo', style: sub),
+        ],
+      ],
+    );
+  }
+}
+
+class _Card extends StatelessWidget {
+  final String? title;
+  final Widget child;
+  const _Card({this.title, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: const Color(0x191A1C23),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: const Color(0xFFFFFFFF).withValues(alpha: 0.06),
+          width: 1,
+        ),
+      ),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (title != null) ...[
+            Text(
+              title!,
+              style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+          ],
+          child,
+        ],
       ),
     );
   }
