@@ -1,7 +1,9 @@
+import 'dart:io';
 import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart' as supa show Supabase;
-import 'package:url_launcher/url_launcher.dart'; // NEW
+import 'package:supabase_flutter/supabase_flutter.dart' as supa;
+import 'package:url_launcher/url_launcher.dart';
+import 'package:image_picker/image_picker.dart';
 
 class UserViewPage extends StatefulWidget {
   final String gymName;
@@ -148,18 +150,15 @@ class _UserViewPageState extends State<UserViewPage> {
       }
 
       if (s.startsWith('http://') || s.startsWith('https://')) {
-        // looks like a public URL
         row[_resolvedKey] = s;
         continue;
       }
 
-      // treat as storage path, e.g. users/<uid>/<ts>.jpg
       try {
         final signed = await storage.createSignedUrl(s, 3600); // 1h
         final url = (signed as dynamic).signedUrl as String?;
         row[_resolvedKey] = url ?? s; // fallback to raw
       } catch (_) {
-        // fallback to a public url (works if bucket is public)
         row[_resolvedKey] = storage.getPublicUrl(s);
       }
     }
@@ -274,6 +273,9 @@ class _UserViewPageState extends State<UserViewPage> {
     return null;
   }
 
+  String? _userId(Map<String, dynamic> row) =>
+      _str(row, const ['UserID', 'Userid', 'ID', 'Uuid', 'UUID']);
+
   // ---------- intents (call, email, WhatsApp) ----------
   Future<void> _launchPhone(String phoneRaw) async {
     final phone = phoneRaw.trim();
@@ -299,7 +301,6 @@ class _UserViewPageState extends State<UserViewPage> {
   }
 
   String _normalizePhoneForWhatsApp(String raw) {
-    // Keep '+' if present; else strip non-digits and add default +91 for 10-digit Indian numbers.
     String s = raw.trim();
     if (s.isEmpty || s == '-') return '';
     if (s.startsWith('+')) {
@@ -307,7 +308,7 @@ class _UserViewPageState extends State<UserViewPage> {
     }
     String digits = s.replaceAll(RegExp(r'\D'), '');
     digits = digits.replaceFirst(RegExp(r'^0+'), '');
-    if (digits.length == 10) digits = '91$digits'; // change default as needed
+    if (digits.length == 10) digits = '91$digits';
     return digits.isEmpty ? '' : '+$digits';
   }
 
@@ -318,21 +319,18 @@ class _UserViewPageState extends State<UserViewPage> {
     final text = message ?? 'Hi from ${widget.gymName}';
     final enc = Uri.encodeComponent(text);
 
-    // 1) Try regular WhatsApp
     final wa = Uri.parse('whatsapp://send?phone=$phone&text=$enc');
     if (await canLaunchUrl(wa)) {
       await launchUrl(wa, mode: LaunchMode.externalApplication);
       return;
     }
 
-    // 2) Try WhatsApp Business
     final wab = Uri.parse('whatsapp-business://send?phone=$phone&text=$enc');
     if (await canLaunchUrl(wab)) {
       await launchUrl(wab, mode: LaunchMode.externalApplication);
       return;
     }
 
-    // 3) Fallback to web universal link
     final web =
         Uri.parse('https://wa.me/${phone.replaceAll('+', '')}?text=$enc');
     await launchUrl(web, mode: LaunchMode.externalApplication);
@@ -400,6 +398,456 @@ class _UserViewPageState extends State<UserViewPage> {
     );
   }
 
+  // ---------- EDIT USER DIALOG (prefilled) ----------
+
+  void _showEditUserForm(Map<String, dynamic> row) {
+    final formKey = GlobalKey<FormState>();
+
+    final nameC =
+        TextEditingController(text: _name(row) == '-' ? '' : _name(row));
+    final ageC = TextEditingController(text: (_age(row)?.toString() ?? ''));
+    final addressC = TextEditingController(text: _address(row) ?? '');
+    final weightC =
+        TextEditingController(text: _str(row, const ['Weight']) ?? '');
+    final bmiC = TextEditingController(text: (_bmi(row)?.toString() ?? ''));
+    final gymHistoryC =
+        TextEditingController(text: _str(row, const ['GymHistory']) ?? '');
+    final targetC = TextEditingController(text: _target(row) ?? '');
+    final healthHistoryC =
+        TextEditingController(text: _str(row, const ['HealthHistory']) ?? '');
+    final supplementHistoryC = TextEditingController(
+        text: _str(row, const ['SupplementHistory']) ?? '');
+    final heightC =
+        TextEditingController(text: _str(row, const ['Height']) ?? '');
+    final membershipC = TextEditingController(text: _membership(row) ?? '');
+    final exercizeTypeC =
+        TextEditingController(text: _str(row, const ['ExercizeType']) ?? '');
+    final sexC = TextEditingController(text: _str(row, const ['Sex']) ?? '');
+    final emailC = TextEditingController(text: _email(row) ?? '');
+    final joinDateRaw = _str(row, const ['JoinDate']) ?? '';
+    final joinDateC = TextEditingController(
+      text: joinDateRaw.isEmpty
+          ? ''
+          : (DateTime.tryParse(joinDateRaw)
+                  ?.toIso8601String()
+                  .split('T')
+                  .first ??
+              joinDateRaw),
+    );
+    final phoneC =
+        TextEditingController(text: _phone(row) == '-' ? '' : _phone(row));
+
+    // Avatar handling
+    File? avatarFile;
+    String? avatarPublicUrl = _photoUrl(row); // keep existing
+    bool uploadingAvatar = false;
+
+    void recalcBmi() {
+      final w = int.tryParse(weightC.text.trim());
+      final hCm = int.tryParse(heightC.text.trim());
+      if (w != null && hCm != null && hCm > 0) {
+        final h = hCm / 100.0;
+        final bmi = (w / (h * h)).round();
+        bmiC.text = bmi.toString();
+      } else {
+        bmiC.text = '';
+      }
+    }
+
+    DateTime? pickedJoin =
+        DateTime.tryParse(joinDateC.text.isEmpty ? '' : joinDateC.text);
+    Future<void> pickJoinDate() async {
+      final now = DateTime.now();
+      final first = DateTime(now.year - 5, 1, 1);
+      final last = DateTime(now.year + 5, 12, 31);
+      final d = await showDatePicker(
+        context: context,
+        initialDate: pickedJoin ?? now,
+        firstDate: first,
+        lastDate: last,
+      );
+      if (d != null) {
+        pickedJoin = d;
+        joinDateC.text = d.toIso8601String().split('T').first;
+      }
+    }
+
+    String? _req(String? v) => (v?.trim().isEmpty ?? true) ? 'Required' : null;
+
+    Future<void> _pickImage(
+        ImageSource source, void Function(void Function()) setLocal) async {
+      try {
+        final picker = ImagePicker();
+        final XFile? picked = await picker.pickImage(
+          source: source,
+          imageQuality: 85,
+          maxWidth: 1600,
+        );
+        if (picked == null) return;
+        setLocal(() {
+          avatarFile = File(picked.path);
+          // mark for upload; we’ll replace avatarPublicUrl after upload
+        });
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Could not pick image: $e')),
+          );
+        }
+      }
+    }
+
+    void _showAvatarSheet(void Function(void Function()) setLocal) {
+      showModalBottomSheet(
+        context: context,
+        backgroundColor: const Color(0xFF1A1C23),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        builder: (_) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.photo, color: Colors.white),
+                title: const Text('Choose from Gallery',
+                    style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(context);
+                  _pickImage(ImageSource.gallery, setLocal);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_camera, color: Colors.white),
+                title: const Text('Take a Photo',
+                    style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(context);
+                  _pickImage(ImageSource.camera, setLocal);
+                },
+              ),
+              if (avatarFile != null || (avatarPublicUrl?.isNotEmpty ?? false))
+                ListTile(
+                  leading:
+                      const Icon(Icons.delete_outline, color: Colors.white),
+                  title: const Text('Remove photo',
+                      style: TextStyle(color: Colors.white)),
+                  onTap: () {
+                    Navigator.pop(context);
+                    setLocal(() {
+                      avatarFile = null;
+                      avatarPublicUrl = null;
+                    });
+                  },
+                ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      );
+    }
+
+    Future<void> _ensureAvatarUploaded(
+        void Function(void Function()) setLocal) async {
+      if (avatarFile == null) return; // keep existing URL if no change
+      try {
+        setLocal(() => uploadingAvatar = true);
+
+        final bytes = await avatarFile!.readAsBytes();
+        final storage = supa.Supabase.instance.client.storage.from('avatars');
+
+        final ts = DateTime.now().millisecondsSinceEpoch;
+        final safeKey = (_str(row, const ['FireBaseID']) ?? _gymId ?? 'users')
+            .replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_');
+        final ext = avatarFile!.path.split('.').last.toLowerCase();
+        final path = 'users/$safeKey/$ts.${ext.isEmpty ? 'jpg' : ext}';
+
+        await storage.uploadBinary(
+          path,
+          bytes,
+          fileOptions:
+              const supa.FileOptions(cacheControl: '3600', upsert: true),
+        );
+
+        final publicUrl = storage.getPublicUrl(path);
+        setLocal(() {
+          avatarPublicUrl = publicUrl;
+        });
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Avatar upload failed: $e')),
+          );
+        }
+      } finally {
+        setLocal(() => uploadingAvatar = false);
+      }
+    }
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          backgroundColor: const Color(0xFF111214),
+          title: const Text('Edit Customer',
+              style: TextStyle(color: Colors.white)),
+          content: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.78,
+              maxWidth: MediaQuery.of(context).size.width * 0.9,
+            ),
+            child: SingleChildScrollView(
+              child: Form(
+                key: formKey,
+                child: Column(
+                  children: [
+                    CircleAvatar(
+                      radius: 42,
+                      backgroundColor: const Color(0xFF2A2F3A),
+                      backgroundImage: (avatarFile != null)
+                          ? FileImage(avatarFile!)
+                          : (avatarPublicUrl != null &&
+                                  avatarPublicUrl!.isNotEmpty)
+                              ? NetworkImage(avatarPublicUrl!) as ImageProvider
+                              : null,
+                      child: (avatarFile == null &&
+                              (avatarPublicUrl == null ||
+                                  avatarPublicUrl!.isEmpty))
+                          ? const Icon(Icons.person,
+                              size: 42, color: Colors.white70)
+                          : null,
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      icon: uploadingAvatar
+                          ? const SizedBox(
+                              height: 16,
+                              width: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.camera_alt_outlined),
+                      label: Text(
+                        uploadingAvatar ? 'Uploading...' : 'Add / Change Photo',
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Color(0xFF2A2F3A)),
+                        backgroundColor: const Color(0x201A1C23),
+                      ),
+                      onPressed: uploadingAvatar
+                          ? null
+                          : () => _showAvatarSheet(setLocal),
+                    ),
+                    const SizedBox(height: 14),
+                    _glassyField(
+                        controller: nameC, label: 'Name', validator: _req),
+                    const SizedBox(height: 10),
+                    _glassyField(
+                      controller: ageC,
+                      label: 'Age',
+                      keyboardType: TextInputType.number,
+                    ),
+                    const SizedBox(height: 10),
+                    _glassyField(
+                        controller: addressC, label: 'Address', maxLines: 3),
+                    const SizedBox(height: 10),
+                    _glassyField(
+                      controller: weightC,
+                      label: 'Weight (kg)',
+                      keyboardType: TextInputType.number,
+                      onChanged: (_) => setLocal(recalcBmi),
+                    ),
+                    const SizedBox(height: 10),
+                    _glassyField(
+                      controller: heightC,
+                      label: 'Height (cm)',
+                      keyboardType: TextInputType.number,
+                      onChanged: (_) => setLocal(recalcBmi),
+                    ),
+                    const SizedBox(height: 10),
+                    _glassyField(
+                      controller: bmiC,
+                      label: 'BMI (auto)',
+                      readOnly: true,
+                    ),
+                    const SizedBox(height: 10),
+                    _glassyField(
+                        controller: gymHistoryC,
+                        label: 'GymHistory',
+                        maxLines: 3),
+                    const SizedBox(height: 10),
+                    _glassyField(
+                        controller: targetC, label: 'Target', maxLines: 3),
+                    const SizedBox(height: 10),
+                    _glassyField(
+                        controller: healthHistoryC,
+                        label: 'HealthHistory',
+                        maxLines: 3),
+                    const SizedBox(height: 10),
+                    _glassyField(
+                        controller: supplementHistoryC,
+                        label: 'SupplementHistory',
+                        maxLines: 3),
+                    const SizedBox(height: 10),
+                    _glassDropdown<String>(
+                      label: 'Membership',
+                      value:
+                          (membershipC.text.isEmpty) ? null : membershipC.text,
+                      items: const ['Standard', 'Premium', 'VIP'],
+                      onChanged: (v) =>
+                          setLocal(() => membershipC.text = v ?? ''),
+                    ),
+                    const SizedBox(height: 10),
+                    _glassDropdown<String>(
+                      label: 'ExercizeType',
+                      value: (exercizeTypeC.text.isEmpty)
+                          ? null
+                          : exercizeTypeC.text,
+                      items: const [
+                        'Strength',
+                        'Cardio',
+                        'CrossFit',
+                        'Yoga',
+                        'Mixed'
+                      ],
+                      onChanged: (v) =>
+                          setLocal(() => exercizeTypeC.text = v ?? ''),
+                    ),
+                    const SizedBox(height: 10),
+                    _glassDropdown<String>(
+                      label: 'Sex',
+                      value: (sexC.text.isEmpty) ? null : sexC.text,
+                      items: const ['Male', 'Female', 'Other'],
+                      onChanged: (v) => setLocal(() => sexC.text = v ?? ''),
+                    ),
+                    const SizedBox(height: 10),
+                    _glassyField(
+                      controller: emailC,
+                      label: 'Email',
+                      keyboardType: TextInputType.emailAddress,
+                    ),
+                    const SizedBox(height: 10),
+                    _glassyField(
+                      controller: joinDateC,
+                      label: 'JoinDate (YYYY-MM-DD)',
+                      readOnly: true,
+                      onTap: () async {
+                        await pickJoinDate();
+                        setLocal(() {});
+                      },
+                      suffixIcon: const Icon(Icons.calendar_today,
+                          color: Colors.white70, size: 18),
+                    ),
+                    const SizedBox(height: 10),
+                    _glassyField(
+                      controller: phoneC,
+                      label: 'Phone',
+                      keyboardType: TextInputType.phone,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child:
+                  const Text('Cancel', style: TextStyle(color: Colors.white70)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF2A2F3A),
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () async {
+                if (!formKey.currentState!.validate()) return;
+
+                // Upload avatar if newly chosen
+                await _ensureAvatarUploaded(setLocal);
+
+                final userId = _userId(row);
+                if (userId == null || userId.isEmpty) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content:
+                            Text("This row has no UserID; cannot update.")));
+                  }
+                  return;
+                }
+
+                try {
+                  int? _toInt(TextEditingController c) => c.text.trim().isEmpty
+                      ? null
+                      : int.tryParse(c.text.trim());
+
+                  final payload = {
+                    'Name': nameC.text.trim(),
+                    'Age': _toInt(ageC),
+                    'Address': addressC.text.trim().isEmpty
+                        ? null
+                        : addressC.text.trim(),
+                    'Weight': _toInt(weightC),
+                    'Height': _toInt(heightC),
+                    'BMI': _toInt(bmiC),
+                    'GymHistory': gymHistoryC.text.trim().isEmpty
+                        ? null
+                        : gymHistoryC.text.trim(),
+                    'Target': targetC.text.trim().isEmpty
+                        ? null
+                        : targetC.text.trim(),
+                    'HealthHistory': healthHistoryC.text.trim().isEmpty
+                        ? null
+                        : healthHistoryC.text.trim(),
+                    'SupplementHistory': supplementHistoryC.text.trim().isEmpty
+                        ? null
+                        : supplementHistoryC.text.trim(),
+                    'Membership': membershipC.text.trim().isEmpty
+                        ? null
+                        : membershipC.text.trim(),
+                    'ExercizeType': exercizeTypeC.text.trim().isEmpty
+                        ? null
+                        : exercizeTypeC.text.trim(),
+                    'Sex': sexC.text.trim().isEmpty ? null : sexC.text.trim(),
+                    'Email':
+                        emailC.text.trim().isEmpty ? null : emailC.text.trim(),
+                    'JoinDate': joinDateC.text.trim().isEmpty
+                        ? null
+                        : joinDateC.text.trim(),
+                    'Phone':
+                        phoneC.text.trim().isEmpty ? null : phoneC.text.trim(),
+                    if (avatarPublicUrl != null && avatarPublicUrl!.isNotEmpty)
+                      'PhotoURL': avatarPublicUrl,
+                  };
+
+                  await supa.Supabase.instance.client
+                      .from('Users')
+                      .update(payload)
+                      .eq('UserID', userId);
+
+                  if (mounted) {
+                    Navigator.of(ctx).pop();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Customer updated')),
+                    );
+                    await _fetchUsers(); // refresh list
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Failed to update: $e')),
+                    );
+                  }
+                }
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   // ---------- UI ----------
 
   @override
@@ -442,7 +890,7 @@ class _UserViewPageState extends State<UserViewPage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // Tabs: Dashboard (back) + active User view (highlight)
+                          // Tabs
                           Row(
                             children: [
                               GlassLabelButton(
@@ -460,7 +908,7 @@ class _UserViewPageState extends State<UserViewPage> {
                           ),
                           const SizedBox(height: 10),
 
-                          // Search across all fields (same as dashboard)
+                          // Search
                           TextField(
                             style: const TextStyle(color: Colors.white),
                             decoration: InputDecoration(
@@ -482,7 +930,7 @@ class _UserViewPageState extends State<UserViewPage> {
                           ),
                           const SizedBox(height: 12),
 
-                          // Users list: richer row
+                          // Users list
                           Container(
                             decoration: BoxDecoration(
                               color: const Color(0xFF1A1C23),
@@ -570,7 +1018,7 @@ class _UserViewPageState extends State<UserViewPage> {
                                                                     .ellipsis,
                                                           ),
                                                         ),
-                                                        // Actions: call, WhatsApp & email
+                                                        // Actions: call, WhatsApp, email, edit
                                                         if (phone != '-' &&
                                                             phone
                                                                 .trim()
@@ -623,12 +1071,23 @@ class _UserViewPageState extends State<UserViewPage> {
                                                                 _launchEmail(
                                                                     email),
                                                           ),
+                                                        IconButton(
+                                                          tooltip: 'Edit',
+                                                          icon: const Icon(
+                                                            Icons.edit,
+                                                            color:
+                                                                Colors.white70,
+                                                            size: 20,
+                                                          ),
+                                                          onPressed: () =>
+                                                              _showEditUserForm(
+                                                                  row),
+                                                        ),
                                                       ],
                                                     ),
 
                                                     const SizedBox(height: 6),
 
-                                                    // Phone inline (small)
                                                     if (phone != '-' &&
                                                         phone.trim().isNotEmpty)
                                                       Text(
@@ -639,7 +1098,6 @@ class _UserViewPageState extends State<UserViewPage> {
                                                             fontSize: 12),
                                                       ),
 
-                                                    // Labeled details (only show if present)
                                                     const SizedBox(height: 6),
                                                     Wrap(
                                                       runSpacing: 6,
@@ -679,6 +1137,74 @@ class _UserViewPageState extends State<UserViewPage> {
                         ],
                       ),
                     ),
+    );
+  }
+
+  // ===== UI helpers for form controls =====
+
+  Widget _glassyField({
+    required TextEditingController controller,
+    required String label,
+    int maxLines = 1,
+    TextInputType? keyboardType,
+    String? Function(String?)? validator,
+    bool readOnly = false,
+    VoidCallback? onTap,
+    Widget? suffixIcon,
+    ValueChanged<String>? onChanged,
+  }) {
+    return TextFormField(
+      controller: controller,
+      readOnly: readOnly,
+      onTap: onTap,
+      onChanged: onChanged,
+      maxLines: maxLines,
+      keyboardType: keyboardType,
+      style: const TextStyle(color: Colors.white),
+      decoration: InputDecoration(
+        labelText: label,
+        labelStyle: const TextStyle(color: Colors.white70),
+        suffixIcon: suffixIcon,
+        enabledBorder: const OutlineInputBorder(
+            borderSide: BorderSide(color: Color(0xFF2A2F3A))),
+        focusedBorder: const OutlineInputBorder(
+            borderSide: BorderSide(color: Color(0xFF4F9CF9))),
+      ),
+      validator: validator,
+    );
+  }
+
+  Widget _glassDropdown<T>({
+    required String label,
+    required T? value,
+    required List<T> items,
+    required ValueChanged<T?> onChanged,
+  }) {
+    return DropdownButtonFormField<T>(
+      value: value,
+      items: items
+          .map(
+            (e) => DropdownMenuItem<T>(
+              value: e,
+              child: Text(
+                e.toString(),
+                style: const TextStyle(color: Colors.white),
+              ),
+            ),
+          )
+          .toList(),
+      onChanged: onChanged,
+      style: const TextStyle(color: Colors.white),
+      dropdownColor: const Color(0xFF111214),
+      iconEnabledColor: Colors.white70,
+      decoration: const InputDecoration(
+        labelText: 'Select',
+        labelStyle: TextStyle(color: Colors.white70),
+        enabledBorder: OutlineInputBorder(
+            borderSide: BorderSide(color: Color(0xFF2A2F3A))),
+        focusedBorder: OutlineInputBorder(
+            borderSide: BorderSide(color: Color(0xFF4F9CF9))),
+      ),
     );
   }
 }
@@ -742,9 +1268,9 @@ class GlassLabelButton extends StatelessWidget {
               ),
             ],
           ),
-          child: Text(
-            text, // FIXED: show label for active tab too
-            style: const TextStyle(
+          child: const Text(
+            'Active',
+            style: TextStyle(
               color: Colors.black87,
               fontWeight: FontWeight.w700,
               fontSize: 13.5,
