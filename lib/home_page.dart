@@ -58,14 +58,16 @@ class _HomePageState extends State<HomePage> {
         .order('created_at', ascending: true);
 
     return (rows as List)
-        .map((r) => {
-              'GymID': r['GymID'] as String?,
-              'name': r['GymName'] as String? ?? '',
-              'location': r['Location'] as String? ?? '',
-              'capacity': (r['Capacity'] is int)
-                  ? r['Capacity'] as int
-                  : int.tryParse('${r['Capacity']}') ?? 0,
-            })
+        .map(
+          (r) => {
+            'GymID': r['GymID'] as String?,
+            'name': r['GymName'] as String? ?? '',
+            'location': r['Location'] as String? ?? '',
+            'capacity': (r['Capacity'] is int)
+                ? r['Capacity'] as int
+                : int.tryParse('${r['Capacity']}') ?? 0,
+          },
+        )
         .toList();
   }
 
@@ -136,9 +138,9 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       debugPrint('❌ Sync failed: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Sync failed: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Sync failed: $e')));
       }
     } finally {
       if (mounted) setState(() => _syncing = false);
@@ -202,7 +204,10 @@ class _HomePageState extends State<HomePage> {
             tooltip: 'Sync',
             icon: _syncing
                 ? const SizedBox(
-                    height: 22, width: 22, child: CircularProgressIndicator())
+                    height: 22,
+                    width: 22,
+                    child: CircularProgressIndicator(),
+                  )
                 : const Icon(Icons.refresh),
             onPressed: _syncing ? null : _syncGyms,
           ),
@@ -212,8 +217,10 @@ class _HomePageState extends State<HomePage> {
               child: InkWell(
                 borderRadius: BorderRadius.circular(999),
                 onTap: () {
-                  Navigator.push(context,
-                      MaterialPageRoute(builder: (_) => const ProfilePage()));
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const ProfilePage()),
+                  );
                 },
                 child: CircleAvatar(backgroundImage: NetworkImage(photoUrl)),
               ),
@@ -222,8 +229,10 @@ class _HomePageState extends State<HomePage> {
             IconButton(
               icon: const Icon(Icons.person),
               onPressed: () {
-                Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const ProfilePage()));
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ProfilePage()),
+                );
               },
             ),
           IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
@@ -325,9 +334,11 @@ class _HomePageState extends State<HomePage> {
                       fireBaseId: widget.fireBaseId,
                       client: _client,
                       gymsWithId: userGyms
-                          .where((g) =>
-                              (g['GymID'] is String) &&
-                              (g['GymID'] as String).isNotEmpty)
+                          .where(
+                            (g) =>
+                                (g['GymID'] is String) &&
+                                (g['GymID'] as String).isNotEmpty,
+                          )
                           .map((g) => Map<String, dynamic>.from(g))
                           .toList(),
                     ),
@@ -336,9 +347,9 @@ class _HomePageState extends State<HomePage> {
                   const SizedBox(height: 12),
 
                   // ---------- Muscle Map card (single wide) ----------
-                  const SizedBox(
+                  SizedBox(
                     height: 160,
-                    child: MuscleMapCard(),
+                    child: MuscleMapCard(fireBaseId: widget.fireBaseId),
                   ),
                 ],
               ),

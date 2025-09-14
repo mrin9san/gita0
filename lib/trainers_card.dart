@@ -1,3 +1,4 @@
+// trainers_card.dart
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 
 import 'trainer_list_page.dart';
+import 'trainer_roster_page.dart'; // 👈 NEW
 import 'glass_ui.dart';
 
 class TrainersCard extends StatelessWidget {
@@ -26,7 +28,21 @@ class TrainersCard extends StatelessWidget {
     Navigator.push(
       context,
       MaterialPageRoute(
-          builder: (_) => TrainerListPage(fireBaseId: fireBaseId)),
+        builder: (_) => TrainerListPage(fireBaseId: fireBaseId),
+      ),
+    );
+  }
+
+  void _navigateToRoster(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => TrainerRosterPage(
+          fireBaseId: fireBaseId,
+          client: client,
+          gymsWithId: gymsWithId,
+        ),
+      ),
     );
   }
 
@@ -47,7 +63,7 @@ class TrainersCard extends StatelessWidget {
     bool uploadingAvatar = false;
 
     final selected = <String, bool>{
-      for (final g in gymsWithId) (g['GymID'] as String): false
+      for (final g in gymsWithId) (g['GymID'] as String): false,
     };
 
     void recalcBmi() {
@@ -81,7 +97,9 @@ class TrainersCard extends StatelessWidget {
     String? _req(String? v) => (v?.trim().isEmpty ?? true) ? 'Required' : null;
 
     Future<void> _pickImage(
-        ImageSource source, void Function(void Function()) setLocal) async {
+      ImageSource source,
+      void Function(void Function()) setLocal,
+    ) async {
       try {
         final picker = ImagePicker();
         final XFile? picked = await picker.pickImage(
@@ -96,9 +114,9 @@ class TrainersCard extends StatelessWidget {
         });
       } catch (e) {
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not pick image: $e')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Could not pick image: $e')));
         }
       }
     }
@@ -116,8 +134,10 @@ class TrainersCard extends StatelessWidget {
             children: [
               ListTile(
                 leading: const Icon(Icons.photo, color: Colors.white),
-                title: const Text('Choose from Gallery',
-                    style: TextStyle(color: Colors.white)),
+                title: const Text(
+                  'Choose from Gallery',
+                  style: TextStyle(color: Colors.white),
+                ),
                 onTap: () {
                   Navigator.pop(context);
                   _pickImage(ImageSource.gallery, setLocal);
@@ -125,8 +145,10 @@ class TrainersCard extends StatelessWidget {
               ),
               ListTile(
                 leading: const Icon(Icons.photo_camera, color: Colors.white),
-                title: const Text('Take a Photo',
-                    style: TextStyle(color: Colors.white)),
+                title: const Text(
+                  'Take a Photo',
+                  style: TextStyle(color: Colors.white),
+                ),
                 onTap: () {
                   Navigator.pop(context);
                   _pickImage(ImageSource.camera, setLocal);
@@ -134,10 +156,14 @@ class TrainersCard extends StatelessWidget {
               ),
               if (avatarFile != null)
                 ListTile(
-                  leading:
-                      const Icon(Icons.delete_outline, color: Colors.white),
-                  title: const Text('Remove photo',
-                      style: TextStyle(color: Colors.white)),
+                  leading: const Icon(
+                    Icons.delete_outline,
+                    color: Colors.white,
+                  ),
+                  title: const Text(
+                    'Remove photo',
+                    style: TextStyle(color: Colors.white),
+                  ),
                   onTap: () {
                     Navigator.pop(context);
                     setLocal(() {
@@ -154,7 +180,8 @@ class TrainersCard extends StatelessWidget {
     }
 
     Future<void> _ensureAvatarUploaded(
-        void Function(void Function()) setLocal) async {
+      void Function(void Function()) setLocal,
+    ) async {
       if (avatarFile == null || avatarPublicUrl != null) return;
       try {
         setLocal(() => uploadingAvatar = true);
@@ -165,13 +192,15 @@ class TrainersCard extends StatelessWidget {
         final ts = DateTime.now().millisecondsSinceEpoch;
         final safeId = fireBaseId.replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_');
         final ext = avatarFile!.path.split('.').last.toLowerCase();
-        final path = 'trainers/$safeId/$ts.${ext.isEmpty ? 'jpg' : ext}';
+        final path = 'trainers/$safeId/$ts.${ext.isEmpty ? "jpg" : ext}';
 
         await storage.uploadBinary(
           path,
           bytes,
-          fileOptions:
-              const supa.FileOptions(cacheControl: '3600', upsert: true),
+          fileOptions: const supa.FileOptions(
+            cacheControl: '3600',
+            upsert: true,
+          ),
         );
 
         final publicUrl = storage.getPublicUrl(path);
@@ -180,9 +209,9 @@ class TrainersCard extends StatelessWidget {
         });
       } catch (e) {
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Avatar upload failed: $e')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Avatar upload failed: $e')));
         }
       } finally {
         setLocal(() => uploadingAvatar = false);
@@ -194,8 +223,10 @@ class TrainersCard extends StatelessWidget {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setLocal) => AlertDialog(
           backgroundColor: const Color(0xFF111214),
-          title:
-              const Text('Add Trainer', style: TextStyle(color: Colors.white)),
+          title: const Text(
+            'Add Trainer',
+            style: TextStyle(color: Colors.white),
+          ),
           content: ConstrainedBox(
             constraints: BoxConstraints(
               maxHeight: MediaQuery.of(context).size.height * 0.78,
@@ -209,11 +240,15 @@ class TrainersCard extends StatelessWidget {
                     CircleAvatar(
                       radius: 42,
                       backgroundColor: const Color(0xFF2A2F3A),
-                      backgroundImage:
-                          (avatarFile != null) ? FileImage(avatarFile!) : null,
+                      backgroundImage: (avatarFile != null)
+                          ? FileImage(avatarFile!)
+                          : null,
                       child: (avatarFile == null)
-                          ? const Icon(Icons.sports_gymnastics,
-                              size: 42, color: Colors.white70)
+                          ? const Icon(
+                              Icons.sports_gymnastics,
+                              size: 42,
+                              color: Colors.white70,
+                            )
                           : null,
                     ),
                     const SizedBox(height: 8),
@@ -239,7 +274,10 @@ class TrainersCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 14),
                     glassyField(
-                        controller: nameC, label: 'Name', validator: _req),
+                      controller: nameC,
+                      label: 'Name',
+                      validator: _req,
+                    ),
                     const SizedBox(height: 10),
                     glassyField(
                       controller: ageC,
@@ -274,8 +312,11 @@ class TrainersCard extends StatelessWidget {
                       label: 'JoiningDate (YYYY-MM-DD)',
                       readOnly: true,
                       onTap: () => pickDate(joinDateC),
-                      suffixIcon: const Icon(Icons.calendar_today,
-                          color: Colors.white70, size: 18),
+                      suffixIcon: const Icon(
+                        Icons.calendar_today,
+                        color: Colors.white70,
+                        size: 18,
+                      ),
                     ),
                     const SizedBox(height: 10),
                     glassyField(
@@ -283,16 +324,22 @@ class TrainersCard extends StatelessWidget {
                       label: 'DOB (YYYY-MM-DD)',
                       readOnly: true,
                       onTap: () => pickDate(dobC),
-                      suffixIcon: const Icon(Icons.cake_outlined,
-                          color: Colors.white70, size: 18),
+                      suffixIcon: const Icon(
+                        Icons.cake_outlined,
+                        color: Colors.white70,
+                        size: 18,
+                      ),
                     ),
                     const SizedBox(height: 16),
                     Align(
                       alignment: Alignment.centerLeft,
-                      child: Text('Assign to Gyms',
-                          style: TextStyle(
-                              color: Colors.white.withOpacity(0.9),
-                              fontWeight: FontWeight.w600)),
+                      child: Text(
+                        'Assign to Gyms',
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.9),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                     ),
                     const SizedBox(height: 8),
                     if (gymsWithId.isEmpty)
@@ -314,8 +361,10 @@ class TrainersCard extends StatelessWidget {
                             onChanged: (v) => setLocal(() {
                               selected[id] = v ?? false;
                             }),
-                            title: Text(label,
-                                style: const TextStyle(color: Colors.white)),
+                            title: Text(
+                              label,
+                              style: const TextStyle(color: Colors.white),
+                            ),
                             checkboxShape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(4),
                             ),
@@ -330,8 +379,10 @@ class TrainersCard extends StatelessWidget {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child:
-                  const Text('Cancel', style: TextStyle(color: Colors.white70)),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(color: Colors.white70),
+              ),
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
@@ -340,7 +391,6 @@ class TrainersCard extends StatelessWidget {
               ),
               onPressed: () async {
                 if (!formKey.currentState!.validate()) return;
-
                 await _ensureAvatarUploaded(setLocal);
 
                 try {
@@ -353,16 +403,18 @@ class TrainersCard extends StatelessWidget {
                     'FirebaseID': fireBaseId,
                     'Name': nameC.text.trim(),
                     'Age': _i(ageC),
-                    'Qualification':
-                        qualC.text.trim().isEmpty ? null : qualC.text.trim(),
+                    'Qualification': qualC.text.trim().isEmpty
+                        ? null
+                        : qualC.text.trim(),
                     'Height': _i(heightC),
                     'Weight': _i(weightC),
                     'BMI': _i(bmiC),
                     'JoiningDate': joinDateC.text.trim().isEmpty
                         ? null
                         : joinDateC.text.trim(),
-                    'DOB':
-                        dobC.text.trim().isNotEmpty ? dobC.text.trim() : null,
+                    'DOB': dobC.text.trim().isNotEmpty
+                        ? dobC.text.trim()
+                        : null,
                     if (avatarPublicUrl != null && avatarPublicUrl!.isNotEmpty)
                       'PhotoURL': avatarPublicUrl,
                   };
@@ -382,7 +434,7 @@ class TrainersCard extends StatelessWidget {
                     if (gymIds.isNotEmpty) {
                       await client.from('TrainerGyms').insert([
                         for (final gId in gymIds)
-                          {'TrainerID': trainerId, 'GymID': gId}
+                          {'TrainerID': trainerId, 'GymID': gId},
                       ]);
                     }
                   }
@@ -416,6 +468,7 @@ class TrainersCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Geometry identical to GymCard for consistent sizing/positioning
     const double anchorIconSize = 36;
     const double anchorRightPadding = 142;
     const double arcRadius = 80;
@@ -436,8 +489,16 @@ class TrainersCard extends StatelessWidget {
         bg: Colors.purpleAccent,
         onTap: () => _navigateToTrainerList(context),
       ),
+      ActionSpec(
+        icon: Icons.calendar_month, // 👈 NEW
+        label: 'Roster',
+        bg: const Color(0xFF4F9CF9),
+        onTap: () => _navigateToRoster(context),
+      ),
     ];
-    final anglesDeg = [330.0, 30.0];
+
+    // Place 3 buttons around the anchor (you can tweak angles, height unaffected)
+    final anglesDeg = [330.0, 30.0, 0.0];
 
     return GlassCard(
       child: Padding(
@@ -475,8 +536,10 @@ class TrainersCard extends StatelessWidget {
                           SizedBox(height: 6),
                           Text(
                             'Manage your trainer roster and assignments.',
-                            style:
-                                TextStyle(fontSize: 12, color: Colors.white70),
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.white70,
+                            ),
                           ),
                         ],
                       ),
@@ -491,8 +554,11 @@ class TrainersCard extends StatelessWidget {
               top: 12,
               child: Row(
                 children: [
-                  Icon(Icons.sports_gymnastics,
-                      color: Color(0xFF4F9CF9), size: 16),
+                  Icon(
+                    Icons.sports_gymnastics,
+                    color: Color(0xFF4F9CF9),
+                    size: 16,
+                  ),
                   SizedBox(width: 4),
                   Text(
                     'Trainers',
@@ -531,33 +597,43 @@ class TrainersCard extends StatelessWidget {
               final cx = anchor.dx + arcRadius * math.cos(theta);
               final cy = anchor.dy + arcRadius * math.sin(theta);
 
-              radial.add(Positioned(
-                left: cx - actionCircleSize / 2,
-                top: cy - actionCircleSize / 2,
-                child: ActionButton(
-                  icon: spec.icon,
-                  label: spec.label,
-                  bg: spec.bg,
-                  circleSize: actionCircleSize,
-                  iconSize: actionIconSize,
-                  labelGap: actionLabelGap,
-                  onTap: spec.onTap,
+              radial.add(
+                Positioned(
+                  left: cx - actionCircleSize / 2,
+                  top: cy - actionCircleSize / 2,
+                  child: ActionButton(
+                    icon: spec.icon,
+                    label: spec.label,
+                    bg: spec.bg,
+                    circleSize: actionCircleSize,
+                    iconSize: actionIconSize,
+                    labelGap: actionLabelGap,
+                    onTap: spec.onTap,
+                  ),
                 ),
-              ));
+              );
             }
 
             return Stack(
               clipBehavior: Clip.none,
-              children: [
-                content,
-                pinnedTrainersLabel,
-                anchorWidget,
-                ...radial,
-              ],
+              children: [content, pinnedTrainersLabel, anchorWidget, ...radial],
             );
           },
         ),
       ),
     );
   }
+}
+
+class ActionSpec {
+  final IconData icon;
+  final String label;
+  final Color bg;
+  final VoidCallback onTap;
+  ActionSpec({
+    required this.icon,
+    required this.label,
+    required this.bg,
+    required this.onTap,
+  });
 }

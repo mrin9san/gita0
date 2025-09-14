@@ -3,16 +3,27 @@ import 'package:flutter/material.dart';
 import 'package:model_viewer_plus/model_viewer_plus.dart';
 import 'package:webview_flutter/webview_flutter.dart' show WebViewController;
 
-import 'glass_ui.dart'; // uses your shared GlassCard
+import 'glass_ui.dart'; // uses your shared GlassCard + ActionButton
+import 'package_config_page.dart'; // <-- if you named it package_config_page.dart, change this import
 
 /// ---------- CARD: shows in Home, opens the page ----------
 class MuscleMapCard extends StatelessWidget {
-  const MuscleMapCard({super.key});
+  final String fireBaseId; // NEW: needed to open Package Config
+  const MuscleMapCard({super.key, required this.fireBaseId});
 
   void _openMuscleMap(BuildContext context) {
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const MuscleMapPage()),
+    );
+  }
+
+  void _openPackageConfig(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PackageConfigPage(fireBaseId: fireBaseId),
+      ),
     );
   }
 
@@ -34,41 +45,36 @@ class MuscleMapCard extends StatelessWidget {
               h / 2,
             );
 
+            // Keep pinned label & anchor as in your original.
+            // Replace the big heading/subheading/button area with two compact actions side-by-side.
             final content = Positioned.fill(
               child: Row(
                 children: [
                   Expanded(
                     child: Padding(
                       padding: const EdgeInsets.only(right: 120.0),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                      child: Wrap(
+                        spacing: 16,
+                        runSpacing: 10,
+                        crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
-                          const Text(
-                            'Muscle Map',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                          ActionButton(
+                            icon: Icons.self_improvement,
+                            label: 'Open Muscle Map',
+                            bg: Colors.white, // white chip -> black icon
+                            circleSize: 36,
+                            iconSize: 18,
+                            labelGap: 8,
+                            onTap: () => _openMuscleMap(context),
                           ),
-                          const SizedBox(height: 6),
-                          const Text(
-                            'Explore a 3D muscular system and jump to exercises.',
-                            style:
-                                TextStyle(fontSize: 12, color: Colors.white70),
-                          ),
-                          const SizedBox(height: 12),
-                          ElevatedButton.icon(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF2A2F3A),
-                              foregroundColor: Colors.white,
-                            ),
-                            onPressed: () => _openMuscleMap(context),
-                            icon: const Icon(Icons.self_improvement),
-                            label: const Text('Open Muscle Map'),
+                          ActionButton(
+                            icon: Icons.inventory_2_outlined,
+                            label: 'Configure Packages',
+                            bg: const Color(0xFFFFCA28), // amber chip
+                            circleSize: 36,
+                            iconSize: 18,
+                            labelGap: 8,
+                            onTap: () => _openPackageConfig(context),
                           ),
                         ],
                       ),
@@ -83,8 +89,11 @@ class MuscleMapCard extends StatelessWidget {
               top: 12,
               child: Row(
                 children: [
-                  Icon(Icons.self_improvement,
-                      color: Color(0xFF4F9CF9), size: 16),
+                  Icon(
+                    Icons.self_improvement,
+                    color: Color(0xFF4F9CF9),
+                    size: 16,
+                  ),
                   SizedBox(width: 4),
                   Text(
                     'Muscle Map',
@@ -118,11 +127,7 @@ class MuscleMapCard extends StatelessWidget {
 
             return Stack(
               clipBehavior: Clip.none,
-              children: [
-                content,
-                pinnedLabel,
-                anchorWidget,
-              ],
+              children: [content, pinnedLabel, anchorWidget],
             );
           },
         ),
@@ -141,7 +146,7 @@ class MuscleMapPage extends StatefulWidget {
 
 class _MuscleMapPageState extends State<MuscleMapPage> {
   WebViewController?
-      _mvController; // model_viewer_plus -> WebView under the hood
+  _mvController; // model_viewer_plus -> WebView under the hood
 
   // Camera defaults
   static const String _orbitFront = '0deg 75deg 2m';
@@ -268,55 +273,55 @@ class _MuscleMapPageState extends State<MuscleMapPage> {
       'Barbell Bench Press',
       'Incline Dumbbell Press',
       'Cable Fly',
-      'Dips'
+      'Dips',
     ],
     'deltoid': [
       'Overhead Press',
       'Lateral Raise',
       'Front Raise',
-      'Reverse Pec Deck'
+      'Reverse Pec Deck',
     ],
     'biceps_brachii': [
       'Barbell Curl',
       'Dumbbell Curl',
       'Preacher Curl',
-      'Chin-Up'
+      'Chin-Up',
     ],
     'rectus_abdominis': [
       'Crunch',
       'Hanging Leg Raise',
       'Plank',
-      'Cable Crunch'
+      'Cable Crunch',
     ],
     'quadriceps': ['Back Squat', 'Front Squat', 'Leg Press', 'Walking Lunge'],
     'gastrocnemius': [
       'Standing Calf Raise',
       'Seated Calf Raise',
-      'Donkey Calf Raise'
+      'Donkey Calf Raise',
     ],
     'trapezius': [
       'Barbell Shrug',
       'Dumbbell Shrug',
       'Face Pull',
-      'Upright Row (careful)'
+      'Upright Row (careful)',
     ],
     'latissimus_dorsi': [
       'Pull-Up',
       'Lat Pulldown',
       'One-Arm Dumbbell Row',
-      'Seated Cable Row'
+      'Seated Cable Row',
     ],
     'gluteus_maximus': [
       'Hip Thrust',
       'Romanian Deadlift',
       'Back Squat',
-      'Glute Bridge'
+      'Glute Bridge',
     ],
     'hamstrings': [
       'Romanian Deadlift',
       'Lying Leg Curl',
       'Good Morning',
-      'Nordic Curl'
+      'Nordic Curl',
     ],
   };
 
@@ -361,11 +366,9 @@ class _MuscleMapPageState extends State<MuscleMapPage> {
               onWebViewCreated: (WebViewController controller) {
                 _mvController = controller;
                 // ✅ Register the JS channel directly on the controller.
-                // Works on webview_flutter 3.x and 4.x.
                 _mvController?.addJavaScriptChannel(
                   'Hotspot',
                   onMessageReceived: (message) {
-                    // `message.message` is the string sent from JS
                     _showMuscleSheet(message.message);
                   },
                 );
@@ -384,11 +387,7 @@ class _MuscleMapPageState extends State<MuscleMapPage> {
       child: Row(
         children: [
           ToggleButtons(
-            isSelected: [
-              _sideIndex == 0,
-              _sideIndex == 1,
-              _sideIndex == 2,
-            ],
+            isSelected: [_sideIndex == 0, _sideIndex == 1, _sideIndex == 2],
             borderRadius: BorderRadius.circular(10),
             constraints: const BoxConstraints(minHeight: 36, minWidth: 64),
             onPressed: (idx) {
@@ -398,14 +397,17 @@ class _MuscleMapPageState extends State<MuscleMapPage> {
             },
             children: const [
               Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 8),
-                  child: Text('Front')),
+                padding: EdgeInsets.symmetric(horizontal: 8),
+                child: Text('Front'),
+              ),
               Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 8),
-                  child: Text('Both')),
+                padding: EdgeInsets.symmetric(horizontal: 8),
+                child: Text('Both'),
+              ),
               Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 8),
-                  child: Text('Back')),
+                padding: EdgeInsets.symmetric(horizontal: 8),
+                child: Text('Back'),
+              ),
             ],
           ),
           const SizedBox(width: 12),
@@ -440,7 +442,8 @@ class _MuscleMapPageState extends State<MuscleMapPage> {
     if (_mvController == null) return;
     final groupsJs =
         '[${_activeGroups.map((g) => '\'${g.replaceAll("'", "\\'")}\'').join(',')}]';
-    final script = '''
+    final script =
+        '''
       (function(){
         const allowed = new Set($groupsJs);
         document.querySelectorAll('button.hotspot').forEach(btn => {
@@ -458,9 +461,10 @@ class _MuscleMapPageState extends State<MuscleMapPage> {
     final side = (_sideIndex == 0)
         ? 'front'
         : (_sideIndex == 2)
-            ? 'back'
-            : 'both';
-    final script = '''
+        ? 'back'
+        : 'both';
+    final script =
+        '''
       (function(){
         const side = '$side';
         document.querySelectorAll('button.hotspot').forEach(btn => {
@@ -506,9 +510,10 @@ class _MuscleMapPageState extends State<MuscleMapPage> {
               children: [
                 const Padding(
                   padding: EdgeInsets.all(12.0),
-                  child: Text('Jump to muscle',
-                      style:
-                          TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  child: Text(
+                    'Jump to muscle',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
                 ),
                 const Divider(height: 1),
                 Expanded(
@@ -556,8 +561,10 @@ class _MuscleMapPageState extends State<MuscleMapPage> {
   }
 
   void _showMuscleSheet(String id) {
-    final m =
-        _muscles.firstWhere((x) => x.id == id, orElse: () => _muscles.first);
+    final m = _muscles.firstWhere(
+      (x) => x.id == id,
+      orElse: () => _muscles.first,
+    );
     final tips = _shortFacts[id];
     final exercises = _exerciseLibrary[id] ?? const <String>[];
     showModalBottomSheet(
@@ -571,16 +578,24 @@ class _MuscleMapPageState extends State<MuscleMapPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(m.name,
-                    style: const TextStyle(
-                        fontSize: 20, fontWeight: FontWeight.bold)),
+                Text(
+                  m.name,
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
                 const SizedBox(height: 4),
-                Text(m.group,
-                    style: TextStyle(color: Theme.of(ctx).colorScheme.primary)),
+                Text(
+                  m.group,
+                  style: TextStyle(color: Theme.of(ctx).colorScheme.primary),
+                ),
                 const SizedBox(height: 12),
                 if (tips != null) ...[
-                  const Text('Training ideas',
-                      style: TextStyle(fontWeight: FontWeight.w600)),
+                  const Text(
+                    'Training ideas',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
                   const SizedBox(height: 6),
                   Text(tips),
                   const SizedBox(height: 12),
@@ -619,7 +634,7 @@ class _MuscleMapPageState extends State<MuscleMapPage> {
                       label: const Text('Close'),
                     ),
                   ],
-                )
+                ),
               ],
             ),
           ),
