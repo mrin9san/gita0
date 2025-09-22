@@ -4,7 +4,8 @@ import 'package:model_viewer_plus/model_viewer_plus.dart';
 import 'package:webview_flutter/webview_flutter.dart' show WebViewController;
 
 import 'glass_ui.dart'; // uses your shared GlassCard + ActionButton
-import 'package_config_page.dart'; // <-- if you named it package_config_page.dart, change this import
+import 'package_config_page.dart';
+import 'alert_template.dart'; // <-- if you named it package_config_page.dart, change this import
 
 /// ---------- CARD: shows in Home, opens the page ----------
 class MuscleMapCard extends StatelessWidget {
@@ -23,6 +24,15 @@ class MuscleMapCard extends StatelessWidget {
       context,
       MaterialPageRoute(
         builder: (_) => PackageConfigPage(fireBaseId: fireBaseId),
+      ),
+    );
+  }
+
+  void _openAlertTemplate(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AlertTemplatePage(fireBaseId: fireBaseId),
       ),
     );
   }
@@ -61,7 +71,7 @@ class MuscleMapCard extends StatelessWidget {
                           ActionButton(
                             icon: Icons.self_improvement,
                             label: 'Open Muscle Map',
-                            bg: Colors.white, // white chip -> black icon
+                            bg: Colors.white,
                             circleSize: 36,
                             iconSize: 18,
                             labelGap: 8,
@@ -70,11 +80,20 @@ class MuscleMapCard extends StatelessWidget {
                           ActionButton(
                             icon: Icons.inventory_2_outlined,
                             label: 'Configure Packages',
-                            bg: const Color(0xFFFFCA28), // amber chip
+                            bg: const Color(0xFFFFCA28),
                             circleSize: 36,
                             iconSize: 18,
                             labelGap: 8,
                             onTap: () => _openPackageConfig(context),
+                          ),
+                          ActionButton(
+                            icon: Icons.notifications_active_outlined,
+                            label: 'Configure Alerting Template',
+                            bg: const Color(0xFF81C784),
+                            circleSize: 36,
+                            iconSize: 18,
+                            labelGap: 8,
+                            onTap: () => _openAlertTemplate(context),
                           ),
                         ],
                       ),

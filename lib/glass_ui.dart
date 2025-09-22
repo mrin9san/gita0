@@ -15,7 +15,7 @@ class GlassCard extends StatelessWidget {
           end: Alignment.bottomRight,
           colors: [
             Color.fromARGB(20, 255, 255, 255),
-            Color.fromARGB(5, 255, 255, 255)
+            Color.fromARGB(5, 255, 255, 255),
           ],
         ),
         border: Border.all(
@@ -27,7 +27,7 @@ class GlassCard extends StatelessWidget {
             color: Color.fromARGB(120, 0, 0, 0),
             blurRadius: 10,
             offset: Offset(4, 6),
-          )
+          ),
         ],
       ),
       child: ClipRRect(

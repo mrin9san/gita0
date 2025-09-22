@@ -7,6 +7,7 @@ import 'profile_page.dart';
 import 'gym_card.dart'; // GymCard + showAddGymDialog
 import 'trainers_card.dart'; // TrainersCard
 import 'muscle_map.dart';
+import 'app_shell.dart';
 
 class HomePage extends StatefulWidget {
   final String fireBaseId;
@@ -195,11 +196,7 @@ class _HomePageState extends State<HomePage> {
 
     return Scaffold(
       backgroundColor: const Color(0xFF0D0E11),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF0D0E11),
-        elevation: 0,
-        title: const Text("Gym Manager"),
-        actions: [
+      appBar: GlassHeaderBar(title: 'Home', actions: [
           IconButton(
             tooltip: 'Sync',
             icon: _syncing
@@ -354,6 +351,7 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
       ),
+      bottomNavigationBar: const GlassFooterBar(),
     );
   }
 }
