@@ -39,29 +39,29 @@ class MuscleMapCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const double anchorIconSize = 36;
-    const double anchorRightPadding = 142;
-
+    // kept content padding so alignment stays the same
     return GlassCard(
       child: Padding(
         padding: const EdgeInsets.all(12.0),
         child: LayoutBuilder(
           builder: (context, c) {
+            // (w, h) kept in case you reintroduce anchor logic later
             final w = c.maxWidth;
             final h = c.maxHeight;
+            // final anchorIconSize = 36.0;              // not needed anymore
+            // final anchorRightPadding = 142.0;          // not needed anymore
+            // final anchor = Offset(                     // not needed anymore
+            //   w - anchorRightPadding - anchorIconSize / 2,
+            //   h / 2,
+            // );
 
-            final anchor = Offset(
-              w - anchorRightPadding - anchorIconSize / 2,
-              h / 2,
-            );
-
-            // Keep pinned label & anchor as in your original.
-            // Replace the big heading/subheading/button area with two compact actions side-by-side.
+            // Keep pinned label & spacing exactly as before.
             final content = Positioned.fill(
               child: Row(
                 children: [
                   Expanded(
                     child: Padding(
+                      // keep this 120 right padding to preserve previous layout
                       padding: const EdgeInsets.only(right: 120.0),
                       child: Wrap(
                         spacing: 16,
@@ -126,27 +126,10 @@ class MuscleMapCard extends StatelessWidget {
               ),
             );
 
-            final anchorWidget = Positioned(
-              left: anchor.dx - anchorIconSize / 2,
-              top: anchor.dy - anchorIconSize / 2,
-              child: Container(
-                width: anchorIconSize,
-                height: anchorIconSize,
-                decoration: const BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Color(0xFF2A2F3A),
-                ),
-                child: const Icon(
-                  Icons.self_improvement,
-                  color: Colors.white,
-                  size: 24,
-                ),
-              ),
-            );
-
+            // ⛔ Center anchor icon REMOVED — alignment preserved via right padding above.
             return Stack(
               clipBehavior: Clip.none,
-              children: [content, pinnedLabel, anchorWidget],
+              children: [content, pinnedLabel],
             );
           },
         ),
