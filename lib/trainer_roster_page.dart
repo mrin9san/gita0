@@ -1,7 +1,13 @@
 // trainer_roster_page.dart
 import 'dart:async';
+import 'dart:typed_data'; // NEW
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as supa;
+
+// NEW: PDF export + saving
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:file_saver/file_saver.dart';
 
 /// View mode + range mode
 enum _ViewMode { list, calendar }
@@ -359,6 +365,12 @@ class _TrainerRosterPageState extends State<TrainerRosterPage> {
                   )
                 : const Icon(Icons.save_alt),
             onPressed: _saving ? null : _saveRange,
+          ),
+          // NEW: Download PDF
+          IconButton(
+            tooltip: 'Download PDF',
+            icon: const Icon(Icons.download),
+            onPressed: _saving ? null : _exportPdf,
           ),
           const SizedBox(width: 6),
         ],
@@ -1344,7 +1356,7 @@ class _TrainerRosterPageState extends State<TrainerRosterPage> {
                   const SizedBox(height: 14),
                   Row(
                     children: [
-                      // NEW: Clear all primaries – sets mode to "clear" for selected cells
+                      // Clear all primaries
                       OutlinedButton.icon(
                         icon: const Icon(
                           Icons.backspace_outlined,
@@ -1611,6 +1623,225 @@ class _TrainerRosterPageState extends State<TrainerRosterPage> {
               ),
             ),
         ],
+      ),
+    );
+  }
+
+  // ──────────────────────── PDF EXPORT (NEW) ──────────────────────────────
+
+  Future<void> _exportPdf() async {
+    try {
+      final bytes = await _buildRosterPdf();
+
+      final gym = widget.gymsWithId.firstWhere(
+        (g) => (g['GymID'] as String) == _selectedGymId,
+        orElse: () => <String, dynamic>{},
+      );
+      final gymName = (gym['name'] ?? 'Gym').toString();
+      final safeGym = gymName.replaceAll(RegExp(r'[^\w\-]+'), '_');
+
+      final filename = (_rangeMode == _RangeMode.week)
+          ? 'trainer_roster_${safeGym}_${_fmtDate(_visibleDates.first)}_${_fmtDate(_visibleDates.last)}.pdf'
+          : 'trainer_roster_${safeGym}_${_rangeStart.year}-${_rangeStart.month.toString().padLeft(2, '0')}.pdf';
+
+      await FileSaver.instance.saveFile(
+        name: filename,
+        bytes: bytes,
+        ext: 'pdf',
+        mimeType: MimeType.pdf,
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Saved to Downloads as $filename')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Export failed: $e')));
+      }
+    }
+  }
+
+  Future<Uint8List> _buildRosterPdf() async {
+    final pdf = pw.Document();
+
+    final gym = widget.gymsWithId.firstWhere(
+      (g) => (g['GymID'] as String) == _selectedGymId,
+      orElse: () => <String, dynamic>{},
+    );
+    final gymName = (gym['name'] ?? 'Gym').toString();
+    final gymLoc = (gym['location'] ?? '').toString();
+
+    final dateLabel = (_rangeMode == _RangeMode.week)
+        ? '${_fmtDate(_visibleDates.first)} → ${_fmtDate(_visibleDates.last)}'
+        : '${_rangeStart.year}-${_rangeStart.month.toString().padLeft(2, '0')}';
+
+    // Build a table-friendly snapshot of what’s currently on screen
+    // (Exclude empty shifts: i.e., no primary, no backup, no notes)
+    final rowsPerDay = <String, List<List<String>>>{}; // date -> rows
+    for (final d in _visibleDates) {
+      final dayRows = <List<String>>[];
+      for (var s = 0; s < _defaultShifts.length; s++) {
+        final slot = _getOrMake(d, s);
+        final primaryNames = slot.primaryTrainerIds.map(_trainerName).toList();
+        final backup = slot.backupTrainerId == null
+            ? ''
+            : _trainerName(slot.backupTrainerId!);
+        final notes = slot.notes.trim();
+
+        final isEmpty = primaryNames.isEmpty && backup.isEmpty && notes.isEmpty;
+        if (isEmpty) {
+          // Skip empty shifts in PDF
+          continue;
+        }
+
+        dayRows.add([
+          _defaultShifts[s].name,
+          '${slot.start}-${slot.end}',
+          primaryNames.isEmpty ? '—' : primaryNames.join(', '),
+          backup.isEmpty ? '—' : backup,
+          notes.isEmpty ? '—' : notes,
+        ]);
+      }
+      rowsPerDay[_fmtDate(d)] = dayRows;
+    }
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageTheme: pw.PageTheme(
+          margin: const pw.EdgeInsets.fromLTRB(24, 28, 24, 28),
+          theme: pw.ThemeData.withFont(
+            base: pw.Font.helvetica(),
+            bold: pw.Font.helveticaBold(),
+          ),
+        ),
+        build: (ctx) {
+          return [
+            // Header
+            pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text(
+                  'Trainer Roster',
+                  style: pw.TextStyle(
+                    fontSize: 20,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
+                ),
+                pw.SizedBox(height: 4),
+                pw.Text(
+                  '$gymName${gymLoc.isNotEmpty ? ' • $gymLoc' : ''}',
+                  style: const pw.TextStyle(fontSize: 12),
+                ),
+                pw.Text(dateLabel, style: const pw.TextStyle(fontSize: 12)),
+              ],
+            ),
+            pw.SizedBox(height: 10),
+
+            // Day-by-day tables
+            ...rowsPerDay.entries.map((entry) {
+              final date = entry.key;
+              final rows = entry.value;
+
+              // Show weekday label next to the date
+              final weekday = () {
+                final d = DateTime.parse(date);
+                const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+                return names[d.weekday - 1];
+              }();
+
+              if (rows.isEmpty) {
+                // If no shifts (because excluded), skip rendering the day section.
+                return pw.SizedBox();
+              }
+
+              return pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.SizedBox(height: 8),
+                  pw.Container(
+                    padding: const pw.EdgeInsets.symmetric(
+                      vertical: 6,
+                      horizontal: 8,
+                    ),
+                    decoration: pw.BoxDecoration(
+                      color: PdfColors.grey200,
+                      borderRadius: pw.BorderRadius.circular(4),
+                    ),
+                    child: pw.Text(
+                      '$date ($weekday)',
+                      style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+                    ),
+                  ),
+                  pw.SizedBox(height: 6),
+                  pw.Table(
+                    border: pw.TableBorder.all(
+                      color: PdfColors.grey400,
+                      width: 0.5,
+                    ),
+                    columnWidths: {
+                      0: const pw.FixedColumnWidth(80),
+                      1: const pw.FixedColumnWidth(70),
+                      // others auto
+                    },
+                    children: [
+                      // header row
+                      pw.TableRow(
+                        decoration: const pw.BoxDecoration(
+                          color: PdfColors.grey300,
+                        ),
+                        children: [
+                          _cell('Shift', bold: true),
+                          _cell('Time', bold: true),
+                          _cell('Primary', bold: true),
+                          _cell('Backup', bold: true),
+                          _cell('Notes', bold: true),
+                        ],
+                      ),
+                      // data rows
+                      ...rows.map(
+                        (r) => pw.TableRow(
+                          children: [
+                            _cell(r[0]),
+                            _cell(r[1]),
+                            _cell(r[2]),
+                            _cell(r[3]),
+                            _cell(r[4]),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              );
+            }),
+          ];
+        },
+        footer: (ctx) => pw.Container(
+          alignment: pw.Alignment.centerRight,
+          child: pw.Text(
+            'Generated ${DateTime.now()}',
+            style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
+          ),
+        ),
+      ),
+    );
+
+    return pdf.save();
+  }
+
+  pw.Widget _cell(String text, {bool bold = false}) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.all(6),
+      child: pw.Text(
+        text,
+        style: pw.TextStyle(
+          fontSize: 10,
+          fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal,
+        ),
       ),
     );
   }

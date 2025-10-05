@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart' as supa;
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'renew_subscription_page.dart';
+import 'package:intl/intl.dart'; // <-- added for pretty dates
 
 class ProfilePage extends StatefulWidget {
   final String? fireBaseId;
@@ -76,8 +77,8 @@ class _ProfilePageState extends State<ProfilePage> {
 
       _nameController.text =
           ((row?['Name'] as String?)?.trim().isNotEmpty ?? false)
-              ? (row!['Name'] as String)
-              : metaName;
+          ? (row!['Name'] as String)
+          : metaName;
 
       _locationController.text = (row?['Location'] as String?) ?? '';
       _emailController.text = (row?['EmailID'] as String?) ?? email;
@@ -95,8 +96,26 @@ class _ProfilePageState extends State<ProfilePage> {
       if (mounted) setState(() => _isLoading = false);
     }
 
-    // Best-effort subscription label
+    // Updated: compute subscription label from Payments
     _computeSubscriptionLabel();
+  }
+
+  // --- helper to add months like calendar logic (handles month-end) ---
+  DateTime _addMonths(DateTime dt, int months) {
+    final y = dt.year + ((dt.month - 1 + months) ~/ 12);
+    final m = (dt.month - 1 + months) % 12 + 1;
+    final lastDay = DateTime(y, m + 1, 0).day;
+    final d = dt.day > lastDay ? lastDay : dt.day;
+    return DateTime(
+      y,
+      m,
+      d,
+      dt.hour,
+      dt.minute,
+      dt.second,
+      dt.millisecond,
+      dt.microsecond,
+    );
   }
 
   Future<void> _computeSubscriptionLabel() async {
@@ -104,26 +123,44 @@ class _ProfilePageState extends State<ProfilePage> {
       if (_fireBaseId == null || _fireBaseId!.isEmpty) return;
       final client = supa.Supabase.instance.client;
 
-      // Example logic: number of gyms owned by this FireBaseID → plan
-      final gyms = await client
-          .from('Gyms')
-          .select('GymID')
-          .eq('FireBaseID', _fireBaseId!);
+      // Pull latest successful payment for this user
+      final latest = await client
+          .from('Payments')
+          .select('created_at, Months, Plan, Status')
+          .eq('FireBaseID', _fireBaseId!)
+          .eq('Status', 'success')
+          .order('created_at', ascending: false)
+          .limit(1)
+          .maybeSingle();
 
-      final gymCount = (gyms is List) ? gyms.length : 0;
+      String label = 'Free (no active plan)';
+      if (latest != null) {
+        final createdAtStr = latest['created_at']?.toString();
+        final months = (latest['Months'] ?? 1) as int;
+        final plan = (latest['Plan'] as String?)?.trim();
 
-      String label;
-      if (gymCount <= 1) {
-        label = 'Free';
-      } else if (gymCount <= 3) {
-        label = 'Starter';
-      } else {
-        label = 'Pro';
+        final createdAt = createdAtStr != null
+            ? DateTime.tryParse(createdAtStr)
+            : null;
+        if (createdAt != null) {
+          final expiresAt = _addMonths(createdAt.toLocal(), months);
+          final now = DateTime.now();
+          if (now.isBefore(expiresAt)) {
+            final df = DateFormat('d MMM yyyy');
+            final until = df.format(expiresAt);
+            label =
+                '${(plan == null || plan.isEmpty) ? 'Active' : plan} · $until';
+          } else {
+            // expired -> keep as Free or show expired date if you prefer
+            label = 'Free (no active plan)';
+          }
+        }
       }
 
       if (mounted) setState(() => _subscriptionLabel = label);
-    } catch (_) {
-      // leave default
+    } catch (e) {
+      // leave default if anything fails
+      debugPrint('⚠️ Failed to compute subscription label: $e');
     }
   }
 
@@ -178,10 +215,11 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  Widget _sheetTile(
-      {required IconData icon,
-      required String label,
-      required VoidCallback onTap}) {
+  Widget _sheetTile({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
     return ListTile(
       leading: Icon(icon, color: Colors.white),
       title: Text(label, style: const TextStyle(color: Colors.white)),
@@ -190,15 +228,17 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   Future<void> _pickImage(ImageSource source) async {
-    final picked =
-        await ImagePicker().pickImage(source: source, imageQuality: 85);
+    final picked = await ImagePicker().pickImage(
+      source: source,
+      imageQuality: 85,
+    );
     if (picked != null) {
       setState(() => _localImageFile = File(picked.path));
     }
   }
 
   Future<(String? displayUrl, String? storagePath)>
-      _uploadAvatarIfNeeded() async {
+  _uploadAvatarIfNeeded() async {
     if (_localImageFile == null || _fireBaseId == null) return (null, null);
     try {
       final client = supa.Supabase.instance.client;
@@ -228,9 +268,9 @@ class _ProfilePageState extends State<ProfilePage> {
 
   Future<void> _saveProfile() async {
     if (_user == null || _fireBaseId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Not signed in.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Not signed in.')));
       return;
     }
 
@@ -272,9 +312,9 @@ class _ProfilePageState extends State<ProfilePage> {
           _isEditing = false;
           _localImageFile = null;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Profile saved ✅')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Profile saved ✅')));
       }
     } catch (e) {
       final msg = e.toString();
@@ -283,9 +323,9 @@ class _ProfilePageState extends State<ProfilePage> {
           : 'Failed to save profile: $msg';
       debugPrint('❌ Save profile failed: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(pretty)),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(pretty)));
       }
     } finally {
       if (mounted) setState(() => _isSaving = false);
@@ -323,10 +363,11 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   // ---------- external actions ----------
-  Future<void> _launchEmail(
-      {String to = 'anitronassam@gmail.com',
-      String subject = '',
-      String body = ''}) async {
+  Future<void> _launchEmail({
+    String to = 'anitronassam@gmail.com',
+    String subject = '',
+    String body = '',
+  }) async {
     final uri = Uri(
       scheme: 'mailto',
       path: to,
@@ -351,8 +392,9 @@ class _ProfilePageState extends State<ProfilePage> {
       await launchUrl(wab, mode: LaunchMode.externalApplication);
       return;
     }
-    final web =
-        Uri.parse('https://wa.me/${phone.replaceAll('+', '')}?text=$enc');
+    final web = Uri.parse(
+      'https://wa.me/${phone.replaceAll('+', '')}?text=$enc',
+    );
     await launchUrl(web, mode: LaunchMode.externalApplication);
   }
 
@@ -372,7 +414,10 @@ class _ProfilePageState extends State<ProfilePage> {
                   width: 18,
                   height: 18,
                   child: CircularProgressIndicator(
-                      strokeWidth: 2, color: Colors.white))
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
               : const Icon(Icons.check, color: Colors.white),
         ),
         IconButton(
@@ -400,150 +445,163 @@ class _ProfilePageState extends State<ProfilePage> {
         backgroundColor: bg,
         elevation: 0,
         centerTitle: true,
-        title: const Text('User Profile',
-            style: TextStyle(color: Colors.white, fontSize: 18)),
+        title: const Text(
+          'User Profile',
+          style: TextStyle(color: Colors.white, fontSize: 18),
+        ),
         iconTheme: const IconThemeData(color: Colors.white),
         actions: titleActions,
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _user == null
-              ? const Center(
-                  child: Text('No user is logged in.',
-                      style: TextStyle(color: Colors.white70)))
-              : SafeArea(
-                  top: true,
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        // --- HEADER (avatar + name small) ---
-                        _HeaderSection(
-                          isEditing: _isEditing,
-                          onChangePhoto: _choosePhoto,
-                          avatar: _currentAvatarProvider(),
-                          displayName: _nameController.text.trim().isEmpty
-                              ? 'User'
-                              : _nameController.text.trim(),
-                        ),
-                        const SizedBox(height: 14),
-
-                        // --- PROFILE FIELDS (compact) ---
-                        _Card(
-                          child: Column(
-                            children: [
-                              _field(
-                                label: 'Name',
-                                controller: _nameController,
-                                icon: Icons.person,
-                                editable: _isEditing && !_isSaving,
-                              ),
-                              _field(
-                                label: 'EmailID',
-                                controller: _emailController,
-                                icon: Icons.alternate_email,
-                                editable: false, // READ-ONLY
-                                keyboardType: TextInputType.emailAddress,
-                              ),
-                              _field(
-                                label: 'Location',
-                                controller: _locationController,
-                                icon: Icons.location_on_outlined,
-                                editable: _isEditing && !_isSaving,
-                              ),
-                            ],
-                          ),
-                        ),
-
-                        const SizedBox(height: 12),
-
-                        // --- APP SETTINGS ---
-                        // --- APP SETTINGS ---
-                        _Card(
-                          title: 'App Settings',
-                          child: Column(
-                            children: [
-                              _settingsTile(
-                                icon: Icons.support_agent_outlined,
-                                label: 'Help & Support',
-                                onTap: () => _openHelpSupportSheet(),
-                              ),
-                              _divider(),
-                              _settingsTile(
-                                icon: Icons.bug_report_outlined,
-                                label: 'Report an issue',
-                                onTap: () => _launchEmail(
-                                  subject:
-                                      'Issue report from ${_nameController.text.trim().isEmpty ? 'User' : _nameController.text.trim()}',
-                                  body: 'Describe the issue here...',
-                                ),
-                              ),
-                              _divider(),
-                              _settingsTile(
-                                icon: Icons.workspace_premium_outlined,
-                                label: 'Your subscription',
-                                trailing: Text(
-                                  _subscriptionLabel,
-                                  style: const TextStyle(
-                                      color: Colors.white70, fontSize: 13),
-                                ),
-                                onTap: () {
-                                  showDialog(
-                                    context: context,
-                                    builder: (_) => AlertDialog(
-                                      backgroundColor: const Color(0xFF161922),
-                                      title: const Text('Subscription',
-                                          style:
-                                              TextStyle(color: Colors.white)),
-                                      content: Text(
-                                        'Current plan: $_subscriptionLabel',
-                                        style: const TextStyle(
-                                            color: Colors.white70),
-                                      ),
-                                      actions: [
-                                        TextButton(
-                                            onPressed: () =>
-                                                Navigator.pop(context),
-                                            child: const Text('OK')),
-                                      ],
-                                    ),
-                                  );
-                                },
-                              ),
-                              _divider(),
-                              _settingsTile(
-                                icon: Icons.autorenew_outlined,
-                                label: 'Renew / Update Subscription',
-                                onTap: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (_) => RenewSubscriptionPage(
-                                        fireBaseId:
-                                            _fireBaseId, // we’ll resolve gyms from this
-                                        // preselectedGymId: '...optional...', // pass if you have a selected gym
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                              _divider(),
-                              // NEW: Version row (non-tappable)
-                              _settingsTile(
-                                icon: Icons.info_outline,
-                                label: 'Version',
-                                trailing: const Text('v1.0.0',
-                                    style: TextStyle(
-                                        color: Colors.white70, fontSize: 13)),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
+          ? const Center(
+              child: Text(
+                'No user is logged in.',
+                style: TextStyle(color: Colors.white70),
+              ),
+            )
+          : SafeArea(
+              top: true,
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    // --- HEADER (avatar + name small) ---
+                    _HeaderSection(
+                      isEditing: _isEditing,
+                      onChangePhoto: _choosePhoto,
+                      avatar: _currentAvatarProvider(),
+                      displayName: _nameController.text.trim().isEmpty
+                          ? 'User'
+                          : _nameController.text.trim(),
                     ),
-                  ),
+                    const SizedBox(height: 14),
+
+                    // --- PROFILE FIELDS (compact) ---
+                    _Card(
+                      child: Column(
+                        children: [
+                          _field(
+                            label: 'Name',
+                            controller: _nameController,
+                            icon: Icons.person,
+                            editable: _isEditing && !_isSaving,
+                          ),
+                          _field(
+                            label: 'EmailID',
+                            controller: _emailController,
+                            icon: Icons.alternate_email,
+                            editable: false, // READ-ONLY
+                            keyboardType: TextInputType.emailAddress,
+                          ),
+                          _field(
+                            label: 'Location',
+                            controller: _locationController,
+                            icon: Icons.location_on_outlined,
+                            editable: _isEditing && !_isSaving,
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 12),
+
+                    // --- APP SETTINGS ---
+                    // --- APP SETTINGS ---
+                    _Card(
+                      title: 'App Settings',
+                      child: Column(
+                        children: [
+                          _settingsTile(
+                            icon: Icons.support_agent_outlined,
+                            label: 'Help & Support',
+                            onTap: () => _openHelpSupportSheet(),
+                          ),
+                          _divider(),
+                          _settingsTile(
+                            icon: Icons.bug_report_outlined,
+                            label: 'Report an issue',
+                            onTap: () => _launchEmail(
+                              subject:
+                                  'Issue report from ${_nameController.text.trim().isEmpty ? 'User' : _nameController.text.trim()}',
+                              body: 'Describe the issue here...',
+                            ),
+                          ),
+                          _divider(),
+                          _settingsTile(
+                            icon: Icons.workspace_premium_outlined,
+                            label: 'Your subscription',
+                            trailing: Text(
+                              _subscriptionLabel,
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                              ),
+                            ),
+                            onTap: () {
+                              showDialog(
+                                context: context,
+                                builder: (_) => AlertDialog(
+                                  backgroundColor: const Color(0xFF161922),
+                                  title: const Text(
+                                    'Subscription',
+                                    style: TextStyle(color: Colors.white),
+                                  ),
+                                  content: Text(
+                                    'Current plan: $_subscriptionLabel',
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                    ),
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(context),
+                                      child: const Text('OK'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                          _divider(),
+                          _settingsTile(
+                            icon: Icons.autorenew_outlined,
+                            label: 'Renew / Update Subscription',
+                            onTap: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => RenewSubscriptionPage(
+                                    fireBaseId:
+                                        _fireBaseId, // we’ll resolve gyms from this
+                                    // preselectedGymId: '...optional...', // pass if you have a selected gym
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                          _divider(),
+                          // NEW: Version row (non-tappable)
+                          _settingsTile(
+                            icon: Icons.info_outline,
+                            label: 'Version',
+                            trailing: const Text(
+                              'v1.0.0',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
+              ),
+            ),
     );
   }
 
@@ -566,24 +624,29 @@ class _ProfilePageState extends State<ProfilePage> {
           labelStyle: const TextStyle(color: Colors.white70, fontSize: 13),
           prefixIcon: Icon(icon, color: Colors.white70, size: 18),
           isDense: true,
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 12,
+            vertical: 8,
+          ),
           filled: true,
           fillColor: const Color(0x141A1C23),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(10),
             borderSide: BorderSide(
-                color: const Color(0xFFFFFFFF).withValues(alpha: 0.10)),
+              color: const Color(0xFFFFFFFF).withValues(alpha: 0.10),
+            ),
           ),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(10),
             borderSide: BorderSide(
-                color: const Color(0xFFFFFFFF).withValues(alpha: 0.08)),
+              color: const Color(0xFFFFFFFF).withValues(alpha: 0.08),
+            ),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(10),
             borderSide: BorderSide(
-                color: const Color(0xFFFFFFFF).withValues(alpha: 0.20)),
+              color: const Color(0xFFFFFFFF).withValues(alpha: 0.20),
+            ),
           ),
         ),
       ),
@@ -600,9 +663,14 @@ class _ProfilePageState extends State<ProfilePage> {
       contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
       dense: true,
       leading: Icon(icon, color: Colors.white70, size: 20),
-      title: Text(label,
-          style: const TextStyle(
-              color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500)),
+      title: Text(
+        label,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 14,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
       trailing:
           trailing ?? const Icon(Icons.chevron_right, color: Colors.white38),
       onTap: onTap,
@@ -624,11 +692,14 @@ class _ProfilePageState extends State<ProfilePage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const SizedBox(height: 8),
-            const Text('Help & Support',
-                style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600)),
+            const Text(
+              'Help & Support',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
             const SizedBox(height: 4),
             _sheetTile(
               icon: Icons.email_outlined,
@@ -646,8 +717,10 @@ class _ProfilePageState extends State<ProfilePage> {
               label: 'WhatsApp',
               onTap: () {
                 Navigator.pop(context);
-                _launchWhatsApp('+917099187140',
-                    message: 'Hi, I need support.');
+                _launchWhatsApp(
+                  '+917099187140',
+                  message: 'Hi, I need support.',
+                );
               },
             ),
             const SizedBox(height: 8),
@@ -673,8 +746,10 @@ class _HeaderSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final sub =
-        TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 12.5);
+    final sub = TextStyle(
+      color: Colors.white.withValues(alpha: 0.7),
+      fontSize: 12.5,
+    );
 
     return Column(
       children: [
@@ -701,8 +776,11 @@ class _HeaderSection extends StatelessWidget {
                       color: const Color(0xFF3B82F6),
                       borderRadius: BorderRadius.circular(18),
                     ),
-                    child: const Icon(Icons.camera_alt,
-                        color: Colors.white, size: 16),
+                    child: const Icon(
+                      Icons.camera_alt,
+                      color: Colors.white,
+                      size: 16,
+                    ),
                   ),
                 ),
               ),
@@ -712,7 +790,10 @@ class _HeaderSection extends StatelessWidget {
         Text(
           displayName,
           style: const TextStyle(
-              color: Colors.white, fontWeight: FontWeight.w600, fontSize: 16),
+            color: Colors.white,
+            fontWeight: FontWeight.w600,
+            fontSize: 16,
+          ),
         ),
         if (isEditing) ...[
           const SizedBox(height: 4),
@@ -748,9 +829,10 @@ class _Card extends StatelessWidget {
             Text(
               title!,
               style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600),
+                color: Colors.white70,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const SizedBox(height: 8),
           ],

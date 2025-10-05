@@ -9,6 +9,10 @@ import 'trainers_card.dart'; // TrainersCard
 import 'muscle_map.dart';
 import 'app_shell.dart';
 
+// NEW: paywall + entitlement check
+import 'subscription_service.dart';
+import 'paywall.dart';
+
 class HomePage extends StatefulWidget {
   final String fireBaseId;
 
@@ -19,6 +23,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  // --- existing state ---
   late Box gymsBox;
   List<Map<String, dynamic>> userGyms = [];
 
@@ -27,6 +32,12 @@ class _HomePageState extends State<HomePage> {
 
   supa.SupabaseClient get _client => supa.Supabase.instance.client;
 
+  // --- NEW: subscription gate state ---
+  bool _subscriptionActive = true;
+  DateTime? _expiresAt;
+  bool _checkingSub = true;
+  String? _subMsg;
+
   @override
   void initState() {
     super.initState();
@@ -34,6 +45,85 @@ class _HomePageState extends State<HomePage> {
     _user = _client.auth.currentUser;
     _loadGyms();
     _syncGyms();
+    _checkSubscription(); // check entitlement
+  }
+
+  // ---------- NEW: Paywall open helper ----------
+  void _showPaywall() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) =>
+            PaywallPage(fireBaseId: widget.fireBaseId, expiresAt: _expiresAt),
+      ),
+    );
+  }
+
+  // ---------- NEW: fetch entitlement from Payments ----------
+  Future<void> _checkSubscription() async {
+    final status = await fetchSubscriptionStatus(widget.fireBaseId);
+    if (!mounted) return;
+    setState(() {
+      _subscriptionActive = status.active;
+      _expiresAt = status.expiresAt;
+      _subMsg = status.message;
+      _checkingSub = false;
+    });
+  }
+
+  // ---------- NEW: wrapper that blocks interactions when locked ----------
+  Widget _gated(Widget child) {
+    if (_subscriptionActive) return child;
+
+    return Stack(
+      children: [
+        // 1) Block all gestures
+        AbsorbPointer(absorbing: true, child: child),
+
+        // 2) Optional banner at top (status)
+        Positioned(
+          left: 12,
+          right: 12,
+          top: 12,
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0x33FF6B6B),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0x55FF6B6B)),
+            ),
+            child: Text(
+              _subMsg == null || _subMsg!.isEmpty
+                  ? 'Subscription required to use Gym0.'
+                  : '$_subMsg — tap anywhere to renew.',
+              style: const TextStyle(color: Colors.white),
+            ),
+          ),
+        ),
+
+        // 3) Scrim + CTA
+        Positioned.fill(
+          child: GestureDetector(
+            onTap: _showPaywall,
+            child: Container(
+              color: const Color(0x99000000),
+              alignment: Alignment.center,
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.lock_outline),
+                label: const Text('Unlock access'),
+                onPressed: _showPaywall,
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 14,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   // ------------------ LOCAL (Hive) ------------------
@@ -194,9 +284,127 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     final photoUrl = _avatarUrl(_user);
 
+    final coreBody = RefreshIndicator(
+      onRefresh: _syncGyms,
+      child: userGyms.isEmpty
+          ? ListView(
+              children: [
+                const SizedBox(height: 180),
+                Center(
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF2A2F3A),
+                      foregroundColor: Colors.white,
+                    ),
+                    onPressed: () => showAddGymDialog(
+                      context: context,
+                      client: _client,
+                      fireBaseId: widget.fireBaseId,
+                      allGyms: userGyms,
+                      gymsBox: gymsBox,
+                      onReplaceGyms: (g) => setState(() => userGyms = g),
+                      onAfterChange: _syncGyms,
+                    ),
+                    child: const Text("Add First Gym"),
+                  ),
+                ),
+              ],
+            )
+          : ListView(
+              padding: const EdgeInsets.all(12.0),
+              children: [
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: ElevatedButton.icon(
+                    icon: const Icon(Icons.add),
+                    label: const Text("Add Another Gym"),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF2A2F3A),
+                      foregroundColor: Colors.white,
+                    ),
+                    onPressed: () => showAddGymDialog(
+                      context: context,
+                      client: _client,
+                      fireBaseId: widget.fireBaseId,
+                      allGyms: userGyms,
+                      gymsBox: gymsBox,
+                      onReplaceGyms: (g) => setState(() => userGyms = g),
+                      onAfterChange: _syncGyms,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // ---------- HORIZONTAL SCROLLER of full-width gym cards ----------
+                SizedBox(
+                  height: 240,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final screenW = MediaQuery.of(context).size.width;
+                      const horizontalPadding = 24.0;
+                      final cardW = screenW - horizontalPadding;
+
+                      return ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: userGyms.length,
+                        separatorBuilder: (_, __) => const SizedBox(width: 12),
+                        itemBuilder: (context, index) {
+                          final gym = userGyms[index];
+                          return SizedBox(
+                            width: cardW,
+                            child: GymCard(
+                              gym: gym,
+                              index: index,
+                              allGyms: userGyms,
+                              fireBaseId: widget.fireBaseId,
+                              gymsBox: gymsBox,
+                              client: _client,
+                              onReplaceGyms: (g) =>
+                                  setState(() => userGyms = g),
+                              onAfterChange: _syncGyms,
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+
+                // ---------- Trainers card (single wide) ----------
+                SizedBox(
+                  height: 160,
+                  child: TrainersCard(
+                    fireBaseId: widget.fireBaseId,
+                    client: _client,
+                    gymsWithId: userGyms
+                        .where(
+                          (g) =>
+                              (g['GymID'] is String) &&
+                              (g['GymID'] as String).isNotEmpty,
+                        )
+                        .map((g) => Map<String, dynamic>.from(g))
+                        .toList(),
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+
+                // ---------- Muscle Map card (single wide) ----------
+                SizedBox(
+                  height: 160,
+                  child: MuscleMapCard(fireBaseId: widget.fireBaseId),
+                ),
+              ],
+            ),
+    );
+
     return Scaffold(
       backgroundColor: const Color(0xFF0D0E11),
-      appBar: GlassHeaderBar(title: 'Home', actions: [
+      appBar: GlassHeaderBar(
+        title: 'Home',
+        actions: [
           IconButton(
             tooltip: 'Sync',
             icon: _syncing
@@ -235,122 +443,12 @@ class _HomePageState extends State<HomePage> {
           IconButton(icon: const Icon(Icons.logout), onPressed: _logout),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: _syncGyms,
-        child: userGyms.isEmpty
-            ? ListView(
-                children: [
-                  const SizedBox(height: 180),
-                  Center(
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF2A2F3A),
-                        foregroundColor: Colors.white,
-                      ),
-                      onPressed: () => showAddGymDialog(
-                        context: context,
-                        client: _client,
-                        fireBaseId: widget.fireBaseId,
-                        allGyms: userGyms,
-                        gymsBox: gymsBox,
-                        onReplaceGyms: (g) => setState(() => userGyms = g),
-                        onAfterChange: _syncGyms,
-                      ),
-                      child: const Text("Add First Gym"),
-                    ),
-                  ),
-                ],
-              )
-            : ListView(
-                padding: const EdgeInsets.all(12.0),
-                children: [
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: ElevatedButton.icon(
-                      icon: const Icon(Icons.add),
-                      label: const Text("Add Another Gym"),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF2A2F3A),
-                        foregroundColor: Colors.white,
-                      ),
-                      onPressed: () => showAddGymDialog(
-                        context: context,
-                        client: _client,
-                        fireBaseId: widget.fireBaseId,
-                        allGyms: userGyms,
-                        gymsBox: gymsBox,
-                        onReplaceGyms: (g) => setState(() => userGyms = g),
-                        onAfterChange: _syncGyms,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
 
-                  // ---------- HORIZONTAL SCROLLER of full-width gym cards ----------
-                  SizedBox(
-                    height: 240,
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        final screenW = MediaQuery.of(context).size.width;
-                        const horizontalPadding = 24.0;
-                        final cardW = screenW - horizontalPadding;
+      // HARD GATE: block the entire page if not subscribed
+      body: _checkingSub
+          ? const Center(child: CircularProgressIndicator())
+          : _gated(coreBody),
 
-                        return ListView.separated(
-                          scrollDirection: Axis.horizontal,
-                          itemCount: userGyms.length,
-                          separatorBuilder: (_, __) =>
-                              const SizedBox(width: 12),
-                          itemBuilder: (context, index) {
-                            final gym = userGyms[index];
-                            return SizedBox(
-                              width: cardW,
-                              child: GymCard(
-                                gym: gym,
-                                index: index,
-                                allGyms: userGyms,
-                                fireBaseId: widget.fireBaseId,
-                                gymsBox: gymsBox,
-                                client: _client,
-                                onReplaceGyms: (g) =>
-                                    setState(() => userGyms = g),
-                                onAfterChange: _syncGyms,
-                              ),
-                            );
-                          },
-                        );
-                      },
-                    ),
-                  ),
-
-                  const SizedBox(height: 12),
-
-                  // ---------- Trainers card (single wide) ----------
-                  SizedBox(
-                    height: 160,
-                    child: TrainersCard(
-                      fireBaseId: widget.fireBaseId,
-                      client: _client,
-                      gymsWithId: userGyms
-                          .where(
-                            (g) =>
-                                (g['GymID'] is String) &&
-                                (g['GymID'] as String).isNotEmpty,
-                          )
-                          .map((g) => Map<String, dynamic>.from(g))
-                          .toList(),
-                    ),
-                  ),
-
-                  const SizedBox(height: 12),
-
-                  // ---------- Muscle Map card (single wide) ----------
-                  SizedBox(
-                    height: 160,
-                    child: MuscleMapCard(fireBaseId: widget.fireBaseId),
-                  ),
-                ],
-              ),
-      ),
       bottomNavigationBar: const GlassFooterBar(),
     );
   }
