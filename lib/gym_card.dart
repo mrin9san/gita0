@@ -9,6 +9,12 @@ import 'dashboard.dart';
 import 'user_view_page.dart';
 import 'glass_ui.dart';
 
+/// Minimal package option for the membership dropdown (top-level).
+class _PackageOption {
+  final String name;
+  const _PackageOption(this.name);
+}
+
 class GymCard extends StatelessWidget {
   final Map<String, dynamic> gym;
   final int index;
@@ -50,8 +56,10 @@ class GymCard extends StatelessWidget {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF111214),
-        title:
-            const Text('Confirm delete', style: TextStyle(color: Colors.white)),
+        title: const Text(
+          'Confirm delete',
+          style: TextStyle(color: Colors.white),
+        ),
         content: Text(
           'Are you sure you want to delete "$gymName"?',
           style: const TextStyle(color: Colors.white70),
@@ -59,8 +67,10 @@ class GymCard extends StatelessWidget {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child:
-                const Text('Cancel', style: TextStyle(color: Colors.white70)),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Colors.white70),
+            ),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -84,7 +94,7 @@ class GymCard extends StatelessWidget {
         await client
             .from('Gyms')
             .delete()
-            .eq('FireBaseID', fireBaseId)
+            .eq('AuthUserID', fireBaseId)
             .eq('GymName', g['name'] ?? '')
             .eq('Location', g['location'] ?? '');
       }
@@ -119,11 +129,14 @@ class GymCard extends StatelessWidget {
 
         if (id != null && id.isNotEmpty) {
           // UPDATE existing
-          await client.from('Gyms').update({
-            'GymName': payload['name'],
-            'Location': payload['location'],
-            'Capacity': payload['capacity'],
-          }).eq('GymID', id);
+          await client
+              .from('Gyms')
+              .update({
+                'GymName': payload['name'],
+                'Location': payload['location'],
+                'Capacity': payload['capacity'],
+              })
+              .eq('GymID', id);
           payload['GymID'] = id;
         } else {
           // INSERT and backfill ID
@@ -133,7 +146,7 @@ class GymCard extends StatelessWidget {
                 'GymName': payload['name'],
                 'Location': payload['location'],
                 'Capacity': payload['capacity'],
-                'FireBaseID': fireBaseId,
+                'AuthUserID': fireBaseId,
               })
               .select('GymID')
               .single();
@@ -148,9 +161,9 @@ class GymCard extends StatelessWidget {
       } catch (e) {
         debugPrint("❌ Supabase insert/update failed: $e");
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Failed to save gym: $e")),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text("Failed to save gym: $e")));
         }
       }
     }
@@ -194,8 +207,10 @@ class GymCard extends StatelessWidget {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
-            child:
-                const Text('Cancel', style: TextStyle(color: Colors.white70)),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Colors.white70),
+            ),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -221,7 +236,7 @@ class GymCard extends StatelessWidget {
     final List<dynamic> rows = await client
         .from('Gyms')
         .select('GymID')
-        .eq('FireBaseID', fireBaseId)
+        .eq('AuthUserID', fireBaseId)
         .eq('GymName', name)
         .eq('Location', loc)
         .order('created_at', ascending: false)
@@ -241,6 +256,32 @@ class GymCard extends StatelessWidget {
       }
     }
     return null;
+  }
+
+  // ==================== MEMBERSHIP: dynamic from Packages ====================
+
+  // Fetch all packages for the logged-in owner (fireBaseId / AuthUserID).
+  Future<List<_PackageOption>> _fetchOwnerPackages() async {
+    try {
+      final rows = await client
+          .from('Packages')
+          .select('Name')
+          .eq('AuthUserID', fireBaseId)
+          // not forcing IsActive; show whatever exists
+          .order('IsDefault', ascending: false)
+          .order('created_at', ascending: true);
+
+      final list = (rows as List)
+          .map<Map<String, dynamic>>((r) => Map<String, dynamic>.from(r as Map))
+          .toList();
+
+      return list
+          .map((r) => _PackageOption((r['Name'] ?? '').toString()))
+          .where((p) => p.name.isNotEmpty)
+          .toList();
+    } catch (_) {
+      return const <_PackageOption>[];
+    }
   }
 
   // ======= Add Customer dialog (moved here) =======
@@ -300,7 +341,9 @@ class GymCard extends StatelessWidget {
     String? _req(String? v) => (v?.trim().isEmpty ?? true) ? 'Required' : null;
 
     Future<void> _pickImage(
-        ImageSource source, void Function(void Function()) setLocal) async {
+      ImageSource source,
+      void Function(void Function()) setLocal,
+    ) async {
       try {
         final picker = ImagePicker();
         final XFile? picked = await picker.pickImage(
@@ -315,9 +358,9 @@ class GymCard extends StatelessWidget {
         });
       } catch (e) {
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not pick image: $e')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Could not pick image: $e')));
         }
       }
     }
@@ -335,8 +378,10 @@ class GymCard extends StatelessWidget {
             children: [
               ListTile(
                 leading: const Icon(Icons.photo, color: Colors.white),
-                title: const Text('Choose from Gallery',
-                    style: TextStyle(color: Colors.white)),
+                title: const Text(
+                  'Choose from Gallery',
+                  style: TextStyle(color: Colors.white),
+                ),
                 onTap: () {
                   Navigator.pop(context);
                   _pickImage(ImageSource.gallery, setLocal);
@@ -344,8 +389,10 @@ class GymCard extends StatelessWidget {
               ),
               ListTile(
                 leading: const Icon(Icons.photo_camera, color: Colors.white),
-                title: const Text('Take a Photo',
-                    style: TextStyle(color: Colors.white)),
+                title: const Text(
+                  'Take a Photo',
+                  style: TextStyle(color: Colors.white),
+                ),
                 onTap: () {
                   Navigator.pop(context);
                   _pickImage(ImageSource.camera, setLocal);
@@ -353,10 +400,14 @@ class GymCard extends StatelessWidget {
               ),
               if (avatarFile != null)
                 ListTile(
-                  leading:
-                      const Icon(Icons.delete_outline, color: Colors.white),
-                  title: const Text('Remove photo',
-                      style: TextStyle(color: Colors.white)),
+                  leading: const Icon(
+                    Icons.delete_outline,
+                    color: Colors.white,
+                  ),
+                  title: const Text(
+                    'Remove photo',
+                    style: TextStyle(color: Colors.white),
+                  ),
                   onTap: () {
                     Navigator.pop(context);
                     setLocal(() {
@@ -373,7 +424,8 @@ class GymCard extends StatelessWidget {
     }
 
     Future<void> _ensureAvatarUploaded(
-        void Function(void Function()) setLocal) async {
+      void Function(void Function()) setLocal,
+    ) async {
       if (avatarFile == null || avatarPublicUrl != null) return;
       try {
         setLocal(() => uploadingAvatar = true);
@@ -389,8 +441,10 @@ class GymCard extends StatelessWidget {
         await storage.uploadBinary(
           path,
           bytes,
-          fileOptions:
-              const supa.FileOptions(cacheControl: '3600', upsert: true),
+          fileOptions: const supa.FileOptions(
+            cacheControl: '3600',
+            upsert: true,
+          ),
         );
 
         final publicUrl = storage.getPublicUrl(path);
@@ -399,9 +453,9 @@ class GymCard extends StatelessWidget {
         });
       } catch (e) {
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Avatar upload failed: $e')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Avatar upload failed: $e')));
         }
       } finally {
         setLocal(() => uploadingAvatar = false);
@@ -413,8 +467,10 @@ class GymCard extends StatelessWidget {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setLocal) => AlertDialog(
           backgroundColor: const Color(0xFF111214),
-          title:
-              const Text('Add Customer', style: TextStyle(color: Colors.white)),
+          title: const Text(
+            'Add Customer',
+            style: TextStyle(color: Colors.white),
+          ),
           content: ConstrainedBox(
             constraints: BoxConstraints(
               maxHeight: MediaQuery.of(context).size.height * 0.78,
@@ -428,11 +484,15 @@ class GymCard extends StatelessWidget {
                     CircleAvatar(
                       radius: 42,
                       backgroundColor: const Color(0xFF2A2F3A),
-                      backgroundImage:
-                          (avatarFile != null) ? FileImage(avatarFile!) : null,
+                      backgroundImage: (avatarFile != null)
+                          ? FileImage(avatarFile!)
+                          : null,
                       child: (avatarFile == null)
-                          ? const Icon(Icons.person,
-                              size: 42, color: Colors.white70)
+                          ? const Icon(
+                              Icons.person,
+                              size: 42,
+                              color: Colors.white70,
+                            )
                           : null,
                     ),
                     const SizedBox(height: 8),
@@ -458,7 +518,10 @@ class GymCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 14),
                     glassyField(
-                        controller: nameC, label: 'Name', validator: _req),
+                      controller: nameC,
+                      label: 'Name',
+                      validator: _req,
+                    ),
                     const SizedBox(height: 10),
                     glassyField(
                       controller: ageC,
@@ -467,7 +530,10 @@ class GymCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 10),
                     glassyField(
-                        controller: addressC, label: 'Address', maxLines: 3),
+                      controller: addressC,
+                      label: 'Address',
+                      maxLines: 3,
+                    ),
                     const SizedBox(height: 10),
                     glassyField(
                       controller: weightC,
@@ -490,30 +556,109 @@ class GymCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 10),
                     glassyField(
-                        controller: gymHistoryC,
-                        label: 'GymHistory',
-                        maxLines: 3),
-                    const SizedBox(height: 10),
-                    glassyField(
-                        controller: targetC, label: 'Target', maxLines: 3),
-                    const SizedBox(height: 10),
-                    glassyField(
-                        controller: healthHistoryC,
-                        label: 'HealthHistory',
-                        maxLines: 3),
-                    const SizedBox(height: 10),
-                    glassyField(
-                        controller: supplementHistoryC,
-                        label: 'SupplementHistory',
-                        maxLines: 3),
-                    const SizedBox(height: 10),
-                    glassDropdown<String>(
-                      label: 'Membership',
-                      value: null,
-                      items: const ['Standard', 'Premium', 'VIP'],
-                      onChanged: (v) =>
-                          setLocal(() => membershipC.text = v ?? ''),
+                      controller: gymHistoryC,
+                      label: 'GymHistory',
+                      maxLines: 3,
                     ),
+                    const SizedBox(height: 10),
+                    glassyField(
+                      controller: targetC,
+                      label: 'Target',
+                      maxLines: 3,
+                    ),
+                    const SizedBox(height: 10),
+                    glassyField(
+                      controller: healthHistoryC,
+                      label: 'HealthHistory',
+                      maxLines: 3,
+                    ),
+                    const SizedBox(height: 10),
+
+                    // === MEMBERSHIP: dynamic Packages for this owner (fireBaseId) ===
+                    FutureBuilder<List<_PackageOption>>(
+                      future: _fetchOwnerPackages(),
+                      builder: (context, snap) {
+                        final isLoading =
+                            snap.connectionState == ConnectionState.waiting;
+                        final pkgs = snap.data ?? const <_PackageOption>[];
+                        final names = pkgs.map((e) => e.name).toList();
+
+                        if (isLoading) {
+                          return DropdownButtonFormField<String>(
+                            value: null,
+                            items: const [],
+                            onChanged: null,
+                            style: const TextStyle(color: Colors.white),
+                            dropdownColor: const Color(0xFF111214),
+                            iconEnabledColor: Colors.white70,
+                            decoration: const InputDecoration(
+                              labelText: 'Membership (loading...)',
+                              labelStyle: TextStyle(color: Colors.white70),
+                              enabledBorder: OutlineInputBorder(
+                                borderSide: BorderSide(
+                                  color: Color(0xFF2A2F3A),
+                                ),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderSide: BorderSide(
+                                  color: Color(0xFF4F9CF9),
+                                ),
+                              ),
+                            ),
+                          );
+                        }
+
+                        if (snap.hasError) {
+                          // If fetch fails, allow free text entry.
+                          return glassyField(
+                            controller: membershipC,
+                            label: 'Membership (failed to load — type custom)',
+                          );
+                        }
+
+                        if (names.isEmpty) {
+                          // Fallback: free text so the form still works
+                          return glassyField(
+                            controller: membershipC,
+                            label:
+                                'Membership (no packages found — type custom)',
+                          );
+                        }
+
+                        return DropdownButtonFormField<String>(
+                          value: names.contains(membershipC.text.trim())
+                              ? membershipC.text.trim()
+                              : null,
+                          items: names
+                              .map(
+                                (n) => DropdownMenuItem<String>(
+                                  value: n,
+                                  child: Text(
+                                    n,
+                                    style: const TextStyle(color: Colors.white),
+                                  ),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: (v) =>
+                              setLocal(() => membershipC.text = v ?? ''),
+                          style: const TextStyle(color: Colors.white),
+                          dropdownColor: const Color(0xFF111214),
+                          iconEnabledColor: Colors.white70,
+                          decoration: const InputDecoration(
+                            labelText: 'Membership',
+                            labelStyle: TextStyle(color: Colors.white70),
+                            enabledBorder: OutlineInputBorder(
+                              borderSide: BorderSide(color: Color(0xFF2A2F3A)),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderSide: BorderSide(color: Color(0xFF4F9CF9)),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+
                     const SizedBox(height: 10),
                     glassDropdown<String>(
                       label: 'ExercizeType',
@@ -523,7 +668,7 @@ class GymCard extends StatelessWidget {
                         'Cardio',
                         'CrossFit',
                         'Yoga',
-                        'Mixed'
+                        'Mixed',
                       ],
                       onChanged: (v) =>
                           setLocal(() => exercizeTypeC.text = v ?? ''),
@@ -547,8 +692,11 @@ class GymCard extends StatelessWidget {
                       label: 'JoinDate (YYYY-MM-DD)',
                       readOnly: true,
                       onTap: pickJoinDate,
-                      suffixIcon: const Icon(Icons.calendar_today,
-                          color: Colors.white70, size: 18),
+                      suffixIcon: const Icon(
+                        Icons.calendar_today,
+                        color: Colors.white70,
+                        size: 18,
+                      ),
                     ),
                     const SizedBox(height: 10),
                     glassyField(
@@ -564,8 +712,10 @@ class GymCard extends StatelessWidget {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child:
-                  const Text('Cancel', style: TextStyle(color: Colors.white70)),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(color: Colors.white70),
+              ),
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
@@ -581,7 +731,8 @@ class GymCard extends StatelessWidget {
                     ScaffoldMessenger.of(ctx).showSnackBar(
                       const SnackBar(
                         content: Text(
-                            "Couldn't resolve GymID. Try re-saving the gym."),
+                          "Couldn't resolve GymID. Try re-saving the gym.",
+                        ),
                       ),
                     );
                   }
@@ -597,7 +748,7 @@ class GymCard extends StatelessWidget {
 
                   final payload = {
                     'GymID': gymId,
-                    'FireBaseID': fireBaseId,
+                    'AuthUserID': fireBaseId,
                     'Name': nameC.text.trim(),
                     'Age': _toInt(ageC),
                     'Address': addressC.text.trim().isEmpty
@@ -625,13 +776,15 @@ class GymCard extends StatelessWidget {
                         ? null
                         : exercizeTypeC.text.trim(),
                     'Sex': sexC.text.trim().isEmpty ? null : sexC.text.trim(),
-                    'Email':
-                        emailC.text.trim().isEmpty ? null : emailC.text.trim(),
+                    'Email': emailC.text.trim().isEmpty
+                        ? null
+                        : emailC.text.trim(),
                     'JoinDate': joinDateC.text.trim().isEmpty
                         ? null
                         : joinDateC.text.trim(),
-                    'Phone':
-                        phoneC.text.trim().isEmpty ? null : phoneC.text.trim(),
+                    'Phone': phoneC.text.trim().isEmpty
+                        ? null
+                        : phoneC.text.trim(),
                     if (avatarPublicUrl != null && avatarPublicUrl!.isNotEmpty)
                       'PhotoURL': avatarPublicUrl,
                   };
@@ -647,7 +800,8 @@ class GymCard extends StatelessWidget {
                     ScaffoldMessenger.of(ctx).showSnackBar(
                       SnackBar(
                         content: Text(
-                            'Customer added (UserID: ${inserted['UserID'] ?? 'new'})'),
+                          'Customer added (UserID: ${inserted['UserID'] ?? 'new'})',
+                        ),
                       ),
                     );
                   }
@@ -785,13 +939,17 @@ class GymCard extends StatelessWidget {
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                                fontSize: 12, color: Colors.white70),
+                              fontSize: 12,
+                              color: Colors.white70,
+                            ),
                           ),
                           const SizedBox(height: 6),
                           Text(
                             "Capacity: ${gym['capacity'] ?? 0}",
                             style: const TextStyle(
-                                fontSize: 12, color: Colors.white70),
+                              fontSize: 12,
+                              color: Colors.white70,
+                            ),
                           ),
                         ],
                       ),
@@ -806,8 +964,11 @@ class GymCard extends StatelessWidget {
               top: 12,
               child: Row(
                 children: const [
-                  Icon(Icons.fitness_center,
-                      color: Color(0xFF4F9CF9), size: 16),
+                  Icon(
+                    Icons.fitness_center,
+                    color: Color(0xFF4F9CF9),
+                    size: 16,
+                  ),
                   SizedBox(width: 4),
                   Text(
                     "Gym",
@@ -831,8 +992,11 @@ class GymCard extends StatelessWidget {
                   shape: BoxShape.circle,
                   color: Color(0xFF2A2F3A),
                 ),
-                child: const Icon(Icons.fitness_center,
-                    color: Colors.white, size: 24),
+                child: const Icon(
+                  Icons.fitness_center,
+                  color: Colors.white,
+                  size: 24,
+                ),
               ),
             );
 
@@ -844,29 +1008,26 @@ class GymCard extends StatelessWidget {
               final cx = anchor.dx + arcRadius * math.cos(theta);
               final cy = anchor.dy + arcRadius * math.sin(theta);
 
-              radial.add(Positioned(
-                left: cx - actionCircleSize / 2,
-                top: cy - actionCircleSize / 2,
-                child: ActionButton(
-                  icon: spec.icon,
-                  label: spec.label,
-                  bg: spec.bg,
-                  circleSize: actionCircleSize,
-                  iconSize: actionIconSize,
-                  labelGap: actionLabelGap,
-                  onTap: spec.onTap,
+              radial.add(
+                Positioned(
+                  left: cx - actionCircleSize / 2,
+                  top: cy - actionCircleSize / 2,
+                  child: ActionButton(
+                    icon: spec.icon,
+                    label: spec.label,
+                    bg: spec.bg,
+                    circleSize: actionCircleSize,
+                    iconSize: actionIconSize,
+                    labelGap: actionLabelGap,
+                    onTap: spec.onTap,
+                  ),
                 ),
-              ));
+              );
             }
 
             return Stack(
               clipBehavior: Clip.none,
-              children: [
-                content,
-                pinnedGymLabel,
-                anchorWidget,
-                ...radial,
-              ],
+              children: [content, pinnedGymLabel, anchorWidget, ...radial],
             );
           },
         ),
@@ -904,6 +1065,40 @@ Future<void> showAddGymDialog({
       'location': locC.text.trim(),
       'capacity': int.tryParse(capC.text.trim()) ?? 0,
     };
+    Future<List<_PackageOption>> _fetchOwnerPackages() async {
+      try {
+        // (A) Pull a few rows without filter to confirm data exists
+        final anyRows = await client
+            .from('Packages')
+            .select('AuthUserID,Name')
+            .limit(5);
+        debugPrint('Packages(any, first 5): $anyRows');
+
+        // (B) Pull rows for this owner id
+        final rows = await client
+            .from('Packages')
+            .select('AuthUserID,Name,IsActive,IsDefault,created_at')
+            .eq('AuthUserID', fireBaseId)
+            .order('IsDefault', ascending: false)
+            .order('created_at', ascending: true);
+
+        debugPrint('Packages(for $fireBaseId): $rows');
+
+        final list = (rows as List)
+            .map<Map<String, dynamic>>(
+              (r) => Map<String, dynamic>.from(r as Map),
+            )
+            .toList();
+
+        return list
+            .map((r) => _PackageOption((r['Name'] ?? '').toString()))
+            .where((p) => p.name.isNotEmpty)
+            .toList();
+      } catch (e) {
+        debugPrint('❌ fetchOwnerPackages error: $e');
+        return const <_PackageOption>[];
+      }
+    }
 
     try {
       final resp = await client
@@ -912,7 +1107,7 @@ Future<void> showAddGymDialog({
             'GymName': payload['name'],
             'Location': payload['location'],
             'Capacity': payload['capacity'],
-            'FireBaseID': fireBaseId,
+            'AuthUserID': fireBaseId,
           })
           .select('GymID')
           .single();
@@ -928,9 +1123,9 @@ Future<void> showAddGymDialog({
     } catch (e) {
       debugPrint("❌ Supabase insert failed: $e");
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Failed to save gym: $e")),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("Failed to save gym: $e")));
       }
     }
   }

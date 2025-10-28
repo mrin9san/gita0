@@ -1,3 +1,4 @@
+// lib/user_view_page.dart
 import 'dart:io';
 import 'dart:ui' show ImageFilter;
 import 'package:flutter/material.dart';
@@ -34,6 +35,9 @@ class _UserViewPageState extends State<UserViewPage> {
   String? _error;
   String? _gymId;
 
+  // NEW: owner id to fetch packages (resolved from Gyms)
+  String? _ownerAuthUserId;
+
   // Search
   String _searchQuery = "";
 
@@ -56,9 +60,11 @@ class _UserViewPageState extends State<UserViewPage> {
     super.initState();
     _gymId = widget.gymId;
     if (_gymId == null || _gymId!.isEmpty) {
-      _resolveGymIdByNameLocation().then((_) => _fetchUsers());
+      _resolveGymIdByNameLocation()
+          .then((_) => _resolveOwnerAuthUserId())
+          .then((_) => _fetchUsers());
     } else {
-      _fetchUsers();
+      _resolveOwnerAuthUserId().then((_) => _fetchUsers());
     }
   }
 
@@ -88,6 +94,44 @@ class _UserViewPageState extends State<UserViewPage> {
       setState(() {
         _resolvingGymId = false;
       });
+    }
+  }
+
+  // NEW: resolve owner (AuthUserID) from Gyms to filter Packages
+  Future<void> _resolveOwnerAuthUserId() async {
+    if (_ownerAuthUserId != null && _ownerAuthUserId!.isNotEmpty) return;
+    try {
+      if (_gymId != null && _gymId!.isNotEmpty) {
+        final res = await supa.Supabase.instance.client
+            .from('Gyms')
+            .select('AuthUserID')
+            .eq('GymID', _gymId!)
+            .limit(1);
+        if (res is List && res.isNotEmpty) {
+          final v = res.first['AuthUserID'];
+          if (v != null && v.toString().isNotEmpty) {
+            _ownerAuthUserId = v.toString();
+            return;
+          }
+        }
+      }
+
+      // fallback: try by (GymName, Location) if GymID absent
+      final res2 = await supa.Supabase.instance.client
+          .from('Gyms')
+          .select('AuthUserID')
+          .eq('GymName', widget.gymName)
+          .eq('Location', widget.gymLocation)
+          .order('created_at', ascending: false)
+          .limit(1);
+      if (res2 is List && res2.isNotEmpty) {
+        final v = res2.first['AuthUserID'];
+        if (v != null && v.toString().isNotEmpty) {
+          _ownerAuthUserId = v.toString();
+        }
+      }
+    } catch (_) {
+      // keep silent; dropdown will handle missing owner id gracefully
     }
   }
 
@@ -134,7 +178,8 @@ class _UserViewPageState extends State<UserViewPage> {
   /// If the stored value looks like an http(s) URL -> use directly.
   /// If it looks like a storage path -> create a signed URL from 'avatars' bucket.
   Future<void> _augmentResolvedPhotoUrls(
-      List<Map<String, dynamic>> rows) async {
+    List<Map<String, dynamic>> rows,
+  ) async {
     final storage = supa.Supabase.instance.client.storage.from('avatars');
 
     for (final row in rows) {
@@ -262,7 +307,7 @@ class _UserViewPageState extends State<UserViewPage> {
       'AvatarURL',
       'AvatarUrl',
       'Photo',
-      'Avatar'
+      'Avatar',
     ]) {
       final v = row[key];
       if (v != null && v.toString().trim().isNotEmpty) {
@@ -292,10 +337,7 @@ class _UserViewPageState extends State<UserViewPage> {
     final uri = Uri(
       scheme: 'mailto',
       path: email,
-      queryParameters: {
-        'subject': subject,
-        'body': body,
-      },
+      queryParameters: {'subject': subject, 'body': body},
     );
     await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
@@ -331,8 +373,9 @@ class _UserViewPageState extends State<UserViewPage> {
       return;
     }
 
-    final web =
-        Uri.parse('https://wa.me/${phone.replaceAll('+', '')}?text=$enc');
+    final web = Uri.parse(
+      'https://wa.me/${phone.replaceAll('+', '')}?text=$enc',
+    );
     await launchUrl(web, mode: LaunchMode.externalApplication);
   }
 
@@ -389,7 +432,7 @@ class _UserViewPageState extends State<UserViewPage> {
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                )
+                ),
               ],
             ),
           ),
@@ -403,39 +446,46 @@ class _UserViewPageState extends State<UserViewPage> {
   void _showEditUserForm(Map<String, dynamic> row) {
     final formKey = GlobalKey<FormState>();
 
-    final nameC =
-        TextEditingController(text: _name(row) == '-' ? '' : _name(row));
+    final nameC = TextEditingController(
+      text: _name(row) == '-' ? '' : _name(row),
+    );
     final ageC = TextEditingController(text: (_age(row)?.toString() ?? ''));
     final addressC = TextEditingController(text: _address(row) ?? '');
-    final weightC =
-        TextEditingController(text: _str(row, const ['Weight']) ?? '');
+    final weightC = TextEditingController(
+      text: _str(row, const ['Weight']) ?? '',
+    );
     final bmiC = TextEditingController(text: (_bmi(row)?.toString() ?? ''));
-    final gymHistoryC =
-        TextEditingController(text: _str(row, const ['GymHistory']) ?? '');
+    final gymHistoryC = TextEditingController(
+      text: _str(row, const ['GymHistory']) ?? '',
+    );
     final targetC = TextEditingController(text: _target(row) ?? '');
-    final healthHistoryC =
-        TextEditingController(text: _str(row, const ['HealthHistory']) ?? '');
+    final healthHistoryC = TextEditingController(
+      text: _str(row, const ['HealthHistory']) ?? '',
+    );
     final supplementHistoryC = TextEditingController(
-        text: _str(row, const ['SupplementHistory']) ?? '');
-    final heightC =
-        TextEditingController(text: _str(row, const ['Height']) ?? '');
+      text: _str(row, const ['SupplementHistory']) ?? '',
+    );
+    final heightC = TextEditingController(
+      text: _str(row, const ['Height']) ?? '',
+    );
     final membershipC = TextEditingController(text: _membership(row) ?? '');
-    final exercizeTypeC =
-        TextEditingController(text: _str(row, const ['ExercizeType']) ?? '');
+    final exercizeTypeC = TextEditingController(
+      text: _str(row, const ['ExercizeType']) ?? '',
+    );
     final sexC = TextEditingController(text: _str(row, const ['Sex']) ?? '');
     final emailC = TextEditingController(text: _email(row) ?? '');
     final joinDateRaw = _str(row, const ['JoinDate']) ?? '';
     final joinDateC = TextEditingController(
       text: joinDateRaw.isEmpty
           ? ''
-          : (DateTime.tryParse(joinDateRaw)
-                  ?.toIso8601String()
-                  .split('T')
-                  .first ??
-              joinDateRaw),
+          : (DateTime.tryParse(
+                  joinDateRaw,
+                )?.toIso8601String().split('T').first ??
+                joinDateRaw),
     );
-    final phoneC =
-        TextEditingController(text: _phone(row) == '-' ? '' : _phone(row));
+    final phoneC = TextEditingController(
+      text: _phone(row) == '-' ? '' : _phone(row),
+    );
 
     // Avatar handling
     File? avatarFile;
@@ -454,8 +504,9 @@ class _UserViewPageState extends State<UserViewPage> {
       }
     }
 
-    DateTime? pickedJoin =
-        DateTime.tryParse(joinDateC.text.isEmpty ? '' : joinDateC.text);
+    DateTime? pickedJoin = DateTime.tryParse(
+      joinDateC.text.isEmpty ? '' : joinDateC.text,
+    );
     Future<void> pickJoinDate() async {
       final now = DateTime.now();
       final first = DateTime(now.year - 5, 1, 1);
@@ -475,7 +526,9 @@ class _UserViewPageState extends State<UserViewPage> {
     String? _req(String? v) => (v?.trim().isEmpty ?? true) ? 'Required' : null;
 
     Future<void> _pickImage(
-        ImageSource source, void Function(void Function()) setLocal) async {
+      ImageSource source,
+      void Function(void Function()) setLocal,
+    ) async {
       try {
         final picker = ImagePicker();
         final XFile? picked = await picker.pickImage(
@@ -490,9 +543,9 @@ class _UserViewPageState extends State<UserViewPage> {
         });
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not pick image: $e')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Could not pick image: $e')));
         }
       }
     }
@@ -510,8 +563,10 @@ class _UserViewPageState extends State<UserViewPage> {
             children: [
               ListTile(
                 leading: const Icon(Icons.photo, color: Colors.white),
-                title: const Text('Choose from Gallery',
-                    style: TextStyle(color: Colors.white)),
+                title: const Text(
+                  'Choose from Gallery',
+                  style: TextStyle(color: Colors.white),
+                ),
                 onTap: () {
                   Navigator.pop(context);
                   _pickImage(ImageSource.gallery, setLocal);
@@ -519,8 +574,10 @@ class _UserViewPageState extends State<UserViewPage> {
               ),
               ListTile(
                 leading: const Icon(Icons.photo_camera, color: Colors.white),
-                title: const Text('Take a Photo',
-                    style: TextStyle(color: Colors.white)),
+                title: const Text(
+                  'Take a Photo',
+                  style: TextStyle(color: Colors.white),
+                ),
                 onTap: () {
                   Navigator.pop(context);
                   _pickImage(ImageSource.camera, setLocal);
@@ -528,10 +585,14 @@ class _UserViewPageState extends State<UserViewPage> {
               ),
               if (avatarFile != null || (avatarPublicUrl?.isNotEmpty ?? false))
                 ListTile(
-                  leading:
-                      const Icon(Icons.delete_outline, color: Colors.white),
-                  title: const Text('Remove photo',
-                      style: TextStyle(color: Colors.white)),
+                  leading: const Icon(
+                    Icons.delete_outline,
+                    color: Colors.white,
+                  ),
+                  title: const Text(
+                    'Remove photo',
+                    style: TextStyle(color: Colors.white),
+                  ),
                   onTap: () {
                     Navigator.pop(context);
                     setLocal(() {
@@ -548,7 +609,8 @@ class _UserViewPageState extends State<UserViewPage> {
     }
 
     Future<void> _ensureAvatarUploaded(
-        void Function(void Function()) setLocal) async {
+      void Function(void Function()) setLocal,
+    ) async {
       if (avatarFile == null) return; // keep existing URL if no change
       try {
         setLocal(() => uploadingAvatar = true);
@@ -557,7 +619,7 @@ class _UserViewPageState extends State<UserViewPage> {
         final storage = supa.Supabase.instance.client.storage.from('avatars');
 
         final ts = DateTime.now().millisecondsSinceEpoch;
-        final safeKey = (_str(row, const ['FireBaseID']) ?? _gymId ?? 'users')
+        final safeKey = (_str(row, const ['AuthUserID']) ?? _gymId ?? 'users')
             .replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_');
         final ext = avatarFile!.path.split('.').last.toLowerCase();
         final path = 'users/$safeKey/$ts.${ext.isEmpty ? 'jpg' : ext}';
@@ -565,8 +627,10 @@ class _UserViewPageState extends State<UserViewPage> {
         await storage.uploadBinary(
           path,
           bytes,
-          fileOptions:
-              const supa.FileOptions(cacheControl: '3600', upsert: true),
+          fileOptions: const supa.FileOptions(
+            cacheControl: '3600',
+            upsert: true,
+          ),
         );
 
         final publicUrl = storage.getPublicUrl(path);
@@ -575,9 +639,9 @@ class _UserViewPageState extends State<UserViewPage> {
         });
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Avatar upload failed: $e')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Avatar upload failed: $e')));
         }
       } finally {
         setLocal(() => uploadingAvatar = false);
@@ -589,8 +653,10 @@ class _UserViewPageState extends State<UserViewPage> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setLocal) => AlertDialog(
           backgroundColor: const Color(0xFF111214),
-          title: const Text('Edit Customer',
-              style: TextStyle(color: Colors.white)),
+          title: const Text(
+            'Edit Customer',
+            style: TextStyle(color: Colors.white),
+          ),
           content: ConstrainedBox(
             constraints: BoxConstraints(
               maxHeight: MediaQuery.of(context).size.height * 0.78,
@@ -607,14 +673,18 @@ class _UserViewPageState extends State<UserViewPage> {
                       backgroundImage: (avatarFile != null)
                           ? FileImage(avatarFile!)
                           : (avatarPublicUrl != null &&
-                                  avatarPublicUrl!.isNotEmpty)
-                              ? NetworkImage(avatarPublicUrl!) as ImageProvider
-                              : null,
-                      child: (avatarFile == null &&
+                                avatarPublicUrl!.isNotEmpty)
+                          ? NetworkImage(avatarPublicUrl!) as ImageProvider
+                          : null,
+                      child:
+                          (avatarFile == null &&
                               (avatarPublicUrl == null ||
                                   avatarPublicUrl!.isEmpty))
-                          ? const Icon(Icons.person,
-                              size: 42, color: Colors.white70)
+                          ? const Icon(
+                              Icons.person,
+                              size: 42,
+                              color: Colors.white70,
+                            )
                           : null,
                     ),
                     const SizedBox(height: 8),
@@ -640,7 +710,10 @@ class _UserViewPageState extends State<UserViewPage> {
                     ),
                     const SizedBox(height: 14),
                     _glassyField(
-                        controller: nameC, label: 'Name', validator: _req),
+                      controller: nameC,
+                      label: 'Name',
+                      validator: _req,
+                    ),
                     const SizedBox(height: 10),
                     _glassyField(
                       controller: ageC,
@@ -649,7 +722,10 @@ class _UserViewPageState extends State<UserViewPage> {
                     ),
                     const SizedBox(height: 10),
                     _glassyField(
-                        controller: addressC, label: 'Address', maxLines: 3),
+                      controller: addressC,
+                      label: 'Address',
+                      maxLines: 3,
+                    ),
                     const SizedBox(height: 10),
                     _glassyField(
                       controller: weightC,
@@ -672,31 +748,88 @@ class _UserViewPageState extends State<UserViewPage> {
                     ),
                     const SizedBox(height: 10),
                     _glassyField(
-                        controller: gymHistoryC,
-                        label: 'GymHistory',
-                        maxLines: 3),
-                    const SizedBox(height: 10),
-                    _glassyField(
-                        controller: targetC, label: 'Target', maxLines: 3),
-                    const SizedBox(height: 10),
-                    _glassyField(
-                        controller: healthHistoryC,
-                        label: 'HealthHistory',
-                        maxLines: 3),
-                    const SizedBox(height: 10),
-                    _glassyField(
-                        controller: supplementHistoryC,
-                        label: 'SupplementHistory',
-                        maxLines: 3),
-                    const SizedBox(height: 10),
-                    _glassDropdown<String>(
-                      label: 'Membership',
-                      value:
-                          (membershipC.text.isEmpty) ? null : membershipC.text,
-                      items: const ['Standard', 'Premium', 'VIP'],
-                      onChanged: (v) =>
-                          setLocal(() => membershipC.text = v ?? ''),
+                      controller: gymHistoryC,
+                      label: 'GymHistory',
+                      maxLines: 3,
                     ),
+                    const SizedBox(height: 10),
+                    _glassyField(
+                      controller: targetC,
+                      label: 'Target',
+                      maxLines: 3,
+                    ),
+                    const SizedBox(height: 10),
+                    _glassyField(
+                      controller: healthHistoryC,
+                      label: 'HealthHistory',
+                      maxLines: 3,
+                    ),
+                    const SizedBox(height: 10),
+                    _glassyField(
+                      controller: supplementHistoryC,
+                      label: 'SupplementHistory',
+                      maxLines: 3,
+                    ),
+                    const SizedBox(height: 10),
+
+                    // ==== MEMBERSHIP (live Packages for gym owner) ====
+                    FutureBuilder<List<_PackageOption>>(
+                      future: _fetchActivePackagesForOwner(),
+                      builder: (context, snap) {
+                        // Gather items (names)
+                        final items = (snap.data ?? const <_PackageOption>[])
+                            .map((p) => p.name)
+                            .toList();
+
+                        final current = membershipC.text.trim().isEmpty
+                            ? null
+                            : membershipC.text.trim();
+
+                        final isLoading =
+                            snap.connectionState == ConnectionState.waiting;
+
+                        // If current value isn't in list, keep it visible but not in menu.
+                        final menuItems = items
+                            .map(
+                              (e) => DropdownMenuItem<String>(
+                                value: e,
+                                child: Text(
+                                  e,
+                                  style: const TextStyle(color: Colors.white),
+                                ),
+                              ),
+                            )
+                            .toList();
+
+                        return DropdownButtonFormField<String>(
+                          value: items.contains(current) ? current : null,
+                          items: menuItems,
+                          onChanged: isLoading
+                              ? null
+                              : (v) =>
+                                    setLocal(() => membershipC.text = v ?? ''),
+                          style: const TextStyle(color: Colors.white),
+                          dropdownColor: const Color(0xFF111214),
+                          iconEnabledColor: Colors.white70,
+                          decoration: InputDecoration(
+                            labelText: isLoading
+                                ? 'Membership (loading...)'
+                                : (snap.hasError
+                                      ? 'Membership (failed to load — tap to retry)'
+                                      : 'Membership'),
+                            labelStyle: const TextStyle(color: Colors.white70),
+                            enabledBorder: const OutlineInputBorder(
+                              borderSide: BorderSide(color: Color(0xFF2A2F3A)),
+                            ),
+                            focusedBorder: const OutlineInputBorder(
+                              borderSide: BorderSide(color: Color(0xFF4F9CF9)),
+                            ),
+                          ),
+                          validator: (_) => null, // keep optional
+                        );
+                      },
+                    ),
+
                     const SizedBox(height: 10),
                     _glassDropdown<String>(
                       label: 'ExercizeType',
@@ -708,7 +841,7 @@ class _UserViewPageState extends State<UserViewPage> {
                         'Cardio',
                         'CrossFit',
                         'Yoga',
-                        'Mixed'
+                        'Mixed',
                       ],
                       onChanged: (v) =>
                           setLocal(() => exercizeTypeC.text = v ?? ''),
@@ -735,8 +868,11 @@ class _UserViewPageState extends State<UserViewPage> {
                         await pickJoinDate();
                         setLocal(() {});
                       },
-                      suffixIcon: const Icon(Icons.calendar_today,
-                          color: Colors.white70, size: 18),
+                      suffixIcon: const Icon(
+                        Icons.calendar_today,
+                        color: Colors.white70,
+                        size: 18,
+                      ),
                     ),
                     const SizedBox(height: 10),
                     _glassyField(
@@ -752,8 +888,10 @@ class _UserViewPageState extends State<UserViewPage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
-              child:
-                  const Text('Cancel', style: TextStyle(color: Colors.white70)),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(color: Colors.white70),
+              ),
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
@@ -769,9 +907,11 @@ class _UserViewPageState extends State<UserViewPage> {
                 final userId = _userId(row);
                 if (userId == null || userId.isEmpty) {
                   if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                        content:
-                            Text("This row has no UserID; cannot update.")));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text("This row has no UserID; cannot update."),
+                      ),
+                    );
                   }
                   return;
                 }
@@ -809,13 +949,15 @@ class _UserViewPageState extends State<UserViewPage> {
                         ? null
                         : exercizeTypeC.text.trim(),
                     'Sex': sexC.text.trim().isEmpty ? null : sexC.text.trim(),
-                    'Email':
-                        emailC.text.trim().isEmpty ? null : emailC.text.trim(),
+                    'Email': emailC.text.trim().isEmpty
+                        ? null
+                        : emailC.text.trim(),
                     'JoinDate': joinDateC.text.trim().isEmpty
                         ? null
                         : joinDateC.text.trim(),
-                    'Phone':
-                        phoneC.text.trim().isEmpty ? null : phoneC.text.trim(),
+                    'Phone': phoneC.text.trim().isEmpty
+                        ? null
+                        : phoneC.text.trim(),
                     if (avatarPublicUrl != null && avatarPublicUrl!.isNotEmpty)
                       'PhotoURL': avatarPublicUrl,
                   };
@@ -848,6 +990,45 @@ class _UserViewPageState extends State<UserViewPage> {
     );
   }
 
+  // === fetch packages for owner (lazy; cached owner id) ===
+  Future<List<_PackageOption>> _fetchActivePackagesForOwner() async {
+    // Make sure owner is known
+    if (_ownerAuthUserId == null || _ownerAuthUserId!.isEmpty) {
+      await _resolveOwnerAuthUserId();
+    }
+    if (_ownerAuthUserId == null || _ownerAuthUserId!.isEmpty) {
+      return const <_PackageOption>[];
+    }
+
+    try {
+      final rows = await supa.Supabase.instance.client
+          .from('Packages')
+          .select('PackageID, Name, Price, IsActive, IsDefault, created_at')
+          .eq('AuthUserID', _ownerAuthUserId!)
+          .eq('IsActive', true)
+          .order('IsDefault', ascending: false)
+          .order('created_at', ascending: true);
+
+      final list = (rows as List)
+          .map<Map<String, dynamic>>((r) => Map<String, dynamic>.from(r as Map))
+          .toList();
+
+      return list
+          .map(
+            (r) => _PackageOption(
+              id: (r['PackageID'] ?? '').toString(),
+              name: (r['Name'] ?? '').toString(),
+              price: (r['Price'] is num)
+                  ? r['Price'] as num
+                  : num.tryParse('${r['Price']}') ?? 0,
+            ),
+          )
+          .toList();
+    } catch (_) {
+      return const <_PackageOption>[];
+    }
+  }
+
   // ---------- UI ----------
 
   @override
@@ -876,267 +1057,251 @@ class _UserViewPageState extends State<UserViewPage> {
       body: _resolvingGymId
           ? const Center(child: CircularProgressIndicator())
           : _loading
-              ? const Center(child: CircularProgressIndicator())
-              : _error != null
-                  ? Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Text(
-                        _error!,
-                        style: const TextStyle(color: Colors.redAccent),
+          ? const Center(child: CircularProgressIndicator())
+          : _error != null
+          ? Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Text(
+                _error!,
+                style: const TextStyle(color: Colors.redAccent),
+              ),
+            )
+          : SingleChildScrollView(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Tabs
+                  Row(
+                    children: [
+                      GlassLabelButton(
+                        text: '${widget.gymName} • Dashboard',
+                        active: false,
+                        onTap: () => Navigator.of(context).pop(),
                       ),
-                    )
-                  : SingleChildScrollView(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // Tabs
-                          Row(
-                            children: [
-                              GlassLabelButton(
-                                text: '${widget.gymName} • Dashboard',
-                                active: false,
-                                onTap: () => Navigator.of(context).pop(),
-                              ),
-                              const SizedBox(width: 8),
-                              GlassLabelButton(
-                                text: '${widget.gymName} • User view mode',
-                                active: true,
-                                onTap: () {},
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 10),
+                      const SizedBox(width: 8),
+                      GlassLabelButton(
+                        text: '${widget.gymName} • User view mode',
+                        active: true,
+                        onTap: () {},
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
 
-                          // Search
-                          TextField(
-                            style: const TextStyle(color: Colors.white),
-                            decoration: InputDecoration(
-                              hintText: "Search across all fields...",
-                              hintStyle: const TextStyle(color: Colors.white54),
-                              filled: true,
-                              fillColor: const Color(0xFF1A1C23),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(12),
-                                borderSide: BorderSide.none,
-                              ),
-                              prefixIcon: const Icon(Icons.search,
-                                  color: Colors.white54),
-                            ),
-                            onChanged: (value) {
-                              _searchQuery = value;
-                              _applySearch();
-                            },
-                          ),
-                          const SizedBox(height: 12),
-
-                          // Users list
-                          Container(
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF1A1C23),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: _filtered.isEmpty
-                                ? const Padding(
-                                    padding: EdgeInsets.all(16.0),
-                                    child: Text(
-                                      'No users to display.',
-                                      style: TextStyle(color: Colors.white70),
-                                    ),
-                                  )
-                                : ListView.separated(
-                                    itemCount: _filtered.length,
-                                    shrinkWrap: true,
-                                    physics:
-                                        const NeverScrollableScrollPhysics(),
-                                    separatorBuilder: (_, __) => Divider(
-                                      height: 1,
-                                      color:
-                                          Colors.white.withValues(alpha: 0.08),
-                                    ),
-                                    itemBuilder: (context, index) {
-                                      final row = _filtered[index];
-                                      final name = _name(row);
-                                      final phone = _phone(row);
-                                      final email = _email(row);
-                                      final photo = _photoUrl(row);
-
-                                      final age = _age(row);
-                                      final addr = _address(row);
-                                      final bmi = _bmi(row);
-                                      final target = _target(row);
-                                      final membership = _membership(row);
-
-                                      return InkWell(
-                                        onTap: () {
-                                          if (photo != null &&
-                                              photo.isNotEmpty) {
-                                            _openPhotoViewer(photo, name);
-                                          }
-                                        },
-                                        child: Padding(
-                                          padding: const EdgeInsets.symmetric(
-                                              horizontal: 12, vertical: 10),
-                                          child: Row(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              // Avatar
-                                              _UserAvatar(
-                                                name: name,
-                                                photoUrl: photo,
-                                                heroTag: photo ?? name,
-                                              ),
-                                              const SizedBox(width: 12),
-
-                                              // Main content
-                                              Expanded(
-                                                child: Column(
-                                                  crossAxisAlignment:
-                                                      CrossAxisAlignment.start,
-                                                  children: [
-                                                    // Top line: Name + actions
-                                                    Row(
-                                                      crossAxisAlignment:
-                                                          CrossAxisAlignment
-                                                              .center,
-                                                      children: [
-                                                        Expanded(
-                                                          child: Text(
-                                                            name,
-                                                            style:
-                                                                const TextStyle(
-                                                              color:
-                                                                  Colors.white,
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .w600,
-                                                              fontSize: 16,
-                                                            ),
-                                                            overflow:
-                                                                TextOverflow
-                                                                    .ellipsis,
-                                                          ),
-                                                        ),
-                                                        // Actions: call, WhatsApp, email, edit
-                                                        if (phone != '-' &&
-                                                            phone
-                                                                .trim()
-                                                                .isNotEmpty)
-                                                          IconButton(
-                                                            tooltip: 'Call',
-                                                            icon: const Icon(
-                                                              Icons.phone,
-                                                              color: Colors
-                                                                  .white70,
-                                                              size: 20,
-                                                            ),
-                                                            onPressed: () =>
-                                                                _launchPhone(
-                                                                    phone),
-                                                          ),
-                                                        if (phone != '-' &&
-                                                            phone
-                                                                .trim()
-                                                                .isNotEmpty)
-                                                          IconButton(
-                                                            tooltip: 'WhatsApp',
-                                                            icon: const Icon(
-                                                              Icons.chat,
-                                                              color: Colors
-                                                                  .white70,
-                                                              size: 20,
-                                                            ),
-                                                            onPressed: () =>
-                                                                _launchWhatsApp(
-                                                              phone,
-                                                              message:
-                                                                  'Hi $name, this is ${widget.gymName}',
-                                                            ),
-                                                          ),
-                                                        if (email != null &&
-                                                            email
-                                                                .trim()
-                                                                .isNotEmpty)
-                                                          IconButton(
-                                                            tooltip: 'Email',
-                                                            icon: const Icon(
-                                                              Icons
-                                                                  .email_outlined,
-                                                              color: Colors
-                                                                  .white70,
-                                                              size: 20,
-                                                            ),
-                                                            onPressed: () =>
-                                                                _launchEmail(
-                                                                    email),
-                                                          ),
-                                                        IconButton(
-                                                          tooltip: 'Edit',
-                                                          icon: const Icon(
-                                                            Icons.edit,
-                                                            color:
-                                                                Colors.white70,
-                                                            size: 20,
-                                                          ),
-                                                          onPressed: () =>
-                                                              _showEditUserForm(
-                                                                  row),
-                                                        ),
-                                                      ],
-                                                    ),
-
-                                                    const SizedBox(height: 6),
-
-                                                    if (phone != '-' &&
-                                                        phone.trim().isNotEmpty)
-                                                      Text(
-                                                        'Phone: $phone',
-                                                        style: const TextStyle(
-                                                            color:
-                                                                Colors.white70,
-                                                            fontSize: 12),
-                                                      ),
-
-                                                    const SizedBox(height: 6),
-                                                    Wrap(
-                                                      runSpacing: 6,
-                                                      spacing: 12,
-                                                      children: [
-                                                        if (age != null)
-                                                          _kvPill(
-                                                              'Age', '$age'),
-                                                        if (addr != null)
-                                                          _kvPill(
-                                                            'Address',
-                                                            addr,
-                                                            maxWidth: 220,
-                                                          ),
-                                                        if (bmi != null)
-                                                          _kvPill(
-                                                              'BMI', '$bmi'),
-                                                        if (target != null)
-                                                          _kvPill(
-                                                              'Target', target,
-                                                              maxWidth: 220),
-                                                        if (membership != null)
-                                                          _kvPill('Membership',
-                                                              membership),
-                                                      ],
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                  ),
-                          ),
-                        ],
+                  // Search
+                  TextField(
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      hintText: "Search across all fields...",
+                      hintStyle: const TextStyle(color: Colors.white54),
+                      filled: true,
+                      fillColor: const Color(0xFF1A1C23),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
+                      prefixIcon: const Icon(
+                        Icons.search,
+                        color: Colors.white54,
                       ),
                     ),
+                    onChanged: (value) {
+                      _searchQuery = value;
+                      _applySearch();
+                    },
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Users list
+                  Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1A1C23),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: _filtered.isEmpty
+                        ? const Padding(
+                            padding: EdgeInsets.all(16.0),
+                            child: Text(
+                              'No users to display.',
+                              style: TextStyle(color: Colors.white70),
+                            ),
+                          )
+                        : ListView.separated(
+                            itemCount: _filtered.length,
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            separatorBuilder: (_, __) => Divider(
+                              height: 1,
+                              color: Colors.white.withValues(alpha: 0.08),
+                            ),
+                            itemBuilder: (context, index) {
+                              final row = _filtered[index];
+                              final name = _name(row);
+                              final phone = _phone(row);
+                              final email = _email(row);
+                              final photo = _photoUrl(row);
+
+                              final age = _age(row);
+                              final addr = _address(row);
+                              final bmi = _bmi(row);
+                              final target = _target(row);
+                              final membership = _membership(row);
+
+                              return InkWell(
+                                onTap: () {
+                                  if (photo != null && photo.isNotEmpty) {
+                                    _openPhotoViewer(photo, name);
+                                  }
+                                },
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 10,
+                                  ),
+                                  child: Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      // Avatar
+                                      _UserAvatar(
+                                        name: name,
+                                        photoUrl: photo,
+                                        heroTag: photo ?? name,
+                                      ),
+                                      const SizedBox(width: 12),
+
+                                      // Main content
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            // Top line: Name + actions
+                                            Row(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.center,
+                                              children: [
+                                                Expanded(
+                                                  child: Text(
+                                                    name,
+                                                    style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                      fontSize: 16,
+                                                    ),
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                                // Actions: call, WhatsApp, email, edit
+                                                if (phone != '-' &&
+                                                    phone.trim().isNotEmpty)
+                                                  IconButton(
+                                                    tooltip: 'Call',
+                                                    icon: const Icon(
+                                                      Icons.phone,
+                                                      color: Colors.white70,
+                                                      size: 20,
+                                                    ),
+                                                    onPressed: () =>
+                                                        _launchPhone(phone),
+                                                  ),
+                                                if (phone != '-' &&
+                                                    phone.trim().isNotEmpty)
+                                                  IconButton(
+                                                    tooltip: 'WhatsApp',
+                                                    icon: const Icon(
+                                                      Icons.chat,
+                                                      color: Colors.white70,
+                                                      size: 20,
+                                                    ),
+                                                    onPressed: () =>
+                                                        _launchWhatsApp(
+                                                          phone,
+                                                          message:
+                                                              'Hi $name, this is ${widget.gymName}',
+                                                        ),
+                                                  ),
+                                                if (email != null &&
+                                                    email.trim().isNotEmpty)
+                                                  IconButton(
+                                                    tooltip: 'Email',
+                                                    icon: const Icon(
+                                                      Icons.email_outlined,
+                                                      color: Colors.white70,
+                                                      size: 20,
+                                                    ),
+                                                    onPressed: () =>
+                                                        _launchEmail(email),
+                                                  ),
+                                                IconButton(
+                                                  tooltip: 'Edit',
+                                                  icon: const Icon(
+                                                    Icons.edit,
+                                                    color: Colors.white70,
+                                                    size: 20,
+                                                  ),
+                                                  onPressed: () =>
+                                                      _showEditUserForm(row),
+                                                ),
+                                              ],
+                                            ),
+
+                                            const SizedBox(height: 6),
+
+                                            if (phone != '-' &&
+                                                phone.trim().isNotEmpty)
+                                              Text(
+                                                'Phone: $phone',
+                                                style: const TextStyle(
+                                                  color: Colors.white70,
+                                                  fontSize: 12,
+                                                ),
+                                              ),
+
+                                            const SizedBox(height: 6),
+                                            Wrap(
+                                              runSpacing: 6,
+                                              spacing: 12,
+                                              children: [
+                                                if (age != null)
+                                                  _kvPill('Age', '$age'),
+                                                if (addr != null)
+                                                  _kvPill(
+                                                    'Address',
+                                                    addr,
+                                                    maxWidth: 220,
+                                                  ),
+                                                if (bmi != null)
+                                                  _kvPill('BMI', '$bmi'),
+                                                if (target != null)
+                                                  _kvPill(
+                                                    'Target',
+                                                    target,
+                                                    maxWidth: 220,
+                                                  ),
+                                                if (membership != null)
+                                                  _kvPill(
+                                                    'Membership',
+                                                    membership,
+                                                  ),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
     );
   }
 
@@ -1166,9 +1331,11 @@ class _UserViewPageState extends State<UserViewPage> {
         labelStyle: const TextStyle(color: Colors.white70),
         suffixIcon: suffixIcon,
         enabledBorder: const OutlineInputBorder(
-            borderSide: BorderSide(color: Color(0xFF2A2F3A))),
+          borderSide: BorderSide(color: Color(0xFF2A2F3A)),
+        ),
         focusedBorder: const OutlineInputBorder(
-            borderSide: BorderSide(color: Color(0xFF4F9CF9))),
+          borderSide: BorderSide(color: Color(0xFF4F9CF9)),
+        ),
       ),
       validator: validator,
     );
@@ -1201,9 +1368,11 @@ class _UserViewPageState extends State<UserViewPage> {
         labelText: 'Select',
         labelStyle: TextStyle(color: Colors.white70),
         enabledBorder: OutlineInputBorder(
-            borderSide: BorderSide(color: Color(0xFF2A2F3A))),
+          borderSide: BorderSide(color: Color(0xFF2A2F3A)),
+        ),
         focusedBorder: OutlineInputBorder(
-            borderSide: BorderSide(color: Color(0xFF4F9CF9))),
+          borderSide: BorderSide(color: Color(0xFF4F9CF9)),
+        ),
       ),
     );
   }
@@ -1216,10 +1385,7 @@ Widget _kvPill(String label, String value, {double? maxWidth}) {
     text,
     maxLines: 2,
     overflow: TextOverflow.ellipsis,
-    style: const TextStyle(
-      color: Colors.white,
-      fontSize: 12.5,
-    ),
+    style: const TextStyle(color: Colors.white, fontSize: 12.5),
   );
 
   return Container(
@@ -1367,4 +1533,16 @@ class _UserAvatar extends StatelessWidget {
       ),
     );
   }
+}
+
+// Internal: just enough info to label membership options
+class _PackageOption {
+  final String id;
+  final String name;
+  final num price;
+  const _PackageOption({
+    required this.id,
+    required this.name,
+    required this.price,
+  });
 }

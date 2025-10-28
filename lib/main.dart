@@ -73,8 +73,8 @@ class AuthWrapper extends StatelessWidget {
   }
 
   /// IMPORTANT:
-  /// - Never change an existing FireBaseID (it’s referenced by Gyms/Users).
-  /// - Find by EmailID; if missing, INSERT and let DB generate FireBaseID.
+  /// - Never change an existing AuthUserID (it’s referenced by Gyms/Users).
+  /// - Find by EmailID; if missing, INSERT and let DB generate AuthUserID.
   Future<String> _getOrCreateFireBaseId() async {
     final client = supa.Supabase.instance.client;
     final user = client.auth.currentUser;
@@ -86,36 +86,32 @@ class AuthWrapper extends StatelessWidget {
 
     final existing = await client
         .from('Fire')
-        .select('FireBaseID, Name, Location')
+        .select('AuthUserID, Name, Location')
         .eq('EmailID', email)
         .maybeSingle();
 
     if (existing != null) {
-      // Optionally keep Name/Location fresh (but do NOT touch FireBaseID)
+      // Optionally keep Name/Location fresh (but do NOT touch AuthUserID)
       try {
         await client.from('Fire').update({'Name': name}).eq('EmailID', email);
       } catch (_) {}
-      final id = existing['FireBaseID'] as String?;
+      final id = existing['AuthUserID'] as String?;
       if (id == null || id.isEmpty) {
-        throw Exception('Existing Fire row has no FireBaseID');
+        throw Exception('Existing Fire row has no AuthUserID');
       }
       return id;
     }
 
-    // Create new; let DB generate FireBaseID
+    // Create new; let DB generate AuthUserID
     final inserted = await client
         .from('Fire')
-        .insert({
-          'EmailID': email,
-          'Name': name,
-          'Location': 'Unknown',
-        })
-        .select('FireBaseID')
+        .insert({'EmailID': email, 'Name': name, 'Location': 'Unknown'})
+        .select('AuthUserID')
         .single();
 
-    final newId = inserted['FireBaseID'] as String?;
+    final newId = inserted['AuthUserID'] as String?;
     if (newId == null || newId.isEmpty) {
-      throw Exception('Failed to obtain FireBaseID from insert');
+      throw Exception('Failed to obtain AuthUserID from insert');
     }
     return newId;
   }
@@ -137,9 +133,11 @@ class _ErrorScaffold extends StatelessWidget {
             children: [
               Text(title, style: const TextStyle(fontSize: 16)),
               const SizedBox(height: 8),
-              Text(error,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.redAccent)),
+              Text(
+                error,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.redAccent),
+              ),
               const SizedBox(height: 16),
               ElevatedButton(
                 onPressed: () => (context as Element).markNeedsBuild(),

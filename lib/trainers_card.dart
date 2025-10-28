@@ -400,7 +400,7 @@ class TrainersCard extends StatelessWidget {
 
                   final payload = {
                     'GymID': null,
-                    'FirebaseID': fireBaseId,
+                    'AuthUserID': fireBaseId,
                     'Name': nameC.text.trim(),
                     'Age': _i(ageC),
                     'Qualification': qualC.text.trim().isEmpty

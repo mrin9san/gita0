@@ -16,17 +16,11 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _signInWithGoogleNative() async {
     setState(() => isLoading = true);
     try {
-      // IMPORTANT for Android: include 'openid' and set serverClientId
       final google = GoogleSignIn(
         scopes: const ['email', 'profile', 'openid'],
         serverClientId:
             '556261840435-h5ppmj4bk0ahps544c6vfdsmmm2hsrpg.apps.googleusercontent.com',
-        // If you build for iOS later, set your iOS clientId:
-        // clientId: 'YOUR_IOS_CLIENT_ID.apps.googleusercontent.com',
       );
-
-      // Optional: clear cached account if you see stale sessions
-      // await google.signOut();
 
       final acct = await google.signIn();
       if (acct == null) {

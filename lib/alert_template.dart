@@ -37,7 +37,7 @@ class _ChipForDaysLeft extends StatelessWidget {
 }
 
 /// Page: Configure Alerting Template (GLOBAL)
-/// - Applies to ALL users under this FireBaseID
+/// - Applies to ALL users under this AuthUserID
 /// - Expiry = JoinDate + 1 month
 /// - Choose lead times & channels; see previews of who would be alerted today and in the next 30 days.
 class AlertTemplatePage extends StatefulWidget {
@@ -107,7 +107,7 @@ class _AlertTemplatePageState extends State<AlertTemplatePage> {
       final data = await client
           .from('Users')
           .select('UserID, Name, Phone, Email, JoinDate, GymID, created_at')
-          .eq('FireBaseID', widget.fireBaseId)
+          .eq('AuthUserID', widget.fireBaseId)
           .order('created_at', ascending: true);
 
       _users = List<Map<String, dynamic>>.from(data);

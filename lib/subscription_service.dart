@@ -42,7 +42,7 @@ Future<SubscriptionStatus> fetchSubscriptionStatus(
       data = await client
           .from('Payments')
           .select('created_at, Months, Status')
-          .eq('FireBaseID', fireBaseId)
+          .eq('AuthUserID', fireBaseId)
           .eq('Status', 'success')
           .eq('GymID', gymId)
           .order('created_at', ascending: false)
@@ -51,7 +51,7 @@ Future<SubscriptionStatus> fetchSubscriptionStatus(
       data = await client
           .from('Payments')
           .select('created_at, Months, Status')
-          .eq('FireBaseID', fireBaseId)
+          .eq('AuthUserID', fireBaseId)
           .eq('Status', 'success')
           .order('created_at', ascending: false)
           .limit(1);

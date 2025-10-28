@@ -34,12 +34,13 @@ class _TrainerListPageState extends State<TrainerListPage> {
     });
 
     try {
-      // 1) trainers owned by this FirebaseID
+      // 1) trainers owned by this AuthUserID
       final rows = await _client
           .from('Trainer')
           .select(
-              'TrainerID, Name, Age, Qualification, PhotoURL, JoiningDate, Height, Weight, BMI, created_at')
-          .eq('FirebaseID', widget.fireBaseId)
+            'TrainerID, Name, Age, Qualification, PhotoURL, JoiningDate, Height, Weight, BMI, created_at',
+          )
+          .eq('AuthUserID', widget.fireBaseId)
           .order('created_at', ascending: true);
 
       final trainers = List<Map<String, dynamic>>.from(rows as List);
@@ -119,8 +120,10 @@ class _TrainerListPageState extends State<TrainerListPage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child:
-                const Text('Cancel', style: TextStyle(color: Colors.white70)),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Colors.white70),
+            ),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -147,14 +150,15 @@ class _TrainerListPageState extends State<TrainerListPage> {
       // Local refresh
       await _loadAll();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Deleted "$name"')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Deleted "$name"')));
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Delete failed: $e')));
       }
     }
   }
@@ -168,126 +172,135 @@ class _TrainerListPageState extends State<TrainerListPage> {
         elevation: 0,
         title: const Text('Trainers'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _loadAll,
-          ),
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _loadAll),
         ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Text(_error!,
-                      style: const TextStyle(color: Colors.redAccent)),
-                )
-              : _trainers.isEmpty
-                  ? const Center(
-                      child: Text('No trainers yet.',
-                          style: TextStyle(color: Colors.white70)),
-                    )
-                  : ListView.separated(
-                      padding: const EdgeInsets.all(12),
-                      itemCount: _trainers.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 8),
-                      itemBuilder: (_, i) {
-                        final t = _trainers[i];
-                        final id = (t['TrainerID'] as String?) ?? '';
-                        final name = (t['Name'] ?? '-') as String;
-                        final qual = (t['Qualification'] ?? '') as String;
-                        final photo = (t['PhotoURL'] ?? '') as String;
-                        final gyms = _trainerGyms[id] ?? const [];
+          ? Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                _error!,
+                style: const TextStyle(color: Colors.redAccent),
+              ),
+            )
+          : _trainers.isEmpty
+          ? const Center(
+              child: Text(
+                'No trainers yet.',
+                style: TextStyle(color: Colors.white70),
+              ),
+            )
+          : ListView.separated(
+              padding: const EdgeInsets.all(12),
+              itemCount: _trainers.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 8),
+              itemBuilder: (_, i) {
+                final t = _trainers[i];
+                final id = (t['TrainerID'] as String?) ?? '';
+                final name = (t['Name'] ?? '-') as String;
+                final qual = (t['Qualification'] ?? '') as String;
+                final photo = (t['PhotoURL'] ?? '') as String;
+                final gyms = _trainerGyms[id] ?? const [];
 
-                        return Container(
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF1A1C23),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: ListTile(
-                            leading: CircleAvatar(
-                              backgroundColor: const Color(0xFF2A2F3A),
-                              backgroundImage: (photo.isNotEmpty)
-                                  ? NetworkImage(photo)
-                                  : null,
-                              child: (photo.isEmpty)
-                                  ? const Icon(Icons.person,
-                                      color: Colors.white70)
-                                  : null,
-                            ),
-                            title: Text(name,
-                                style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.w600)),
-                            subtitle: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                if (qual.isNotEmpty)
-                                  Text(qual,
-                                      style: const TextStyle(
-                                          color: Colors.white70)),
-                                if (gyms.isNotEmpty) const SizedBox(height: 6),
-                                if (gyms.isNotEmpty)
-                                  Wrap(
-                                    spacing: 6,
-                                    runSpacing: 6,
-                                    children: gyms
-                                        .map((g) => Container(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                      horizontal: 10,
-                                                      vertical: 4),
-                                              decoration: BoxDecoration(
-                                                color: const Color(0xFF111214),
-                                                borderRadius:
-                                                    BorderRadius.circular(999),
-                                                border: Border.all(
-                                                    color:
-                                                        const Color(0x22FFFFFF),
-                                                    width: 1),
-                                              ),
-                                              child: Text(
-                                                g,
-                                                style: const TextStyle(
-                                                    color: Colors.white70,
-                                                    fontSize: 12),
-                                              ),
-                                            ))
-                                        .toList(),
-                                  ),
-                              ],
-                            ),
-                            trailing: PopupMenuButton<String>(
-                              color: const Color(0xFF1A1C23),
-                              iconColor: Colors.white,
-                              onSelected: (v) async {
-                                if (v == 'delete') {
-                                  await _confirmDelete(id, name);
-                                } else if (v == 'edit') {
-                                  // TODO: wire to an edit dialog (prefill & update)
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                        content: Text('Edit coming soon')),
-                                  );
-                                }
-                              },
-                              itemBuilder: (ctx) => const [
-                                PopupMenuItem(
-                                  value: 'edit',
-                                  child: Text('Edit',
-                                      style: TextStyle(color: Colors.white)),
-                                ),
-                                PopupMenuItem(
-                                  value: 'delete',
-                                  child: Text('Delete',
-                                      style: TextStyle(color: Colors.white)),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
+                return Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1A1C23),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: const Color(0xFF2A2F3A),
+                      backgroundImage: (photo.isNotEmpty)
+                          ? NetworkImage(photo)
+                          : null,
+                      child: (photo.isEmpty)
+                          ? const Icon(Icons.person, color: Colors.white70)
+                          : null,
                     ),
+                    title: Text(
+                      name,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (qual.isNotEmpty)
+                          Text(
+                            qual,
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+                        if (gyms.isNotEmpty) const SizedBox(height: 6),
+                        if (gyms.isNotEmpty)
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 6,
+                            children: gyms
+                                .map(
+                                  (g) => Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 4,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF111214),
+                                      borderRadius: BorderRadius.circular(999),
+                                      border: Border.all(
+                                        color: const Color(0x22FFFFFF),
+                                        width: 1,
+                                      ),
+                                    ),
+                                    child: Text(
+                                      g,
+                                      style: const TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                                .toList(),
+                          ),
+                      ],
+                    ),
+                    trailing: PopupMenuButton<String>(
+                      color: const Color(0xFF1A1C23),
+                      iconColor: Colors.white,
+                      onSelected: (v) async {
+                        if (v == 'delete') {
+                          await _confirmDelete(id, name);
+                        } else if (v == 'edit') {
+                          // TODO: wire to an edit dialog (prefill & update)
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Edit coming soon')),
+                          );
+                        }
+                      },
+                      itemBuilder: (ctx) => const [
+                        PopupMenuItem(
+                          value: 'edit',
+                          child: Text(
+                            'Edit',
+                            style: TextStyle(color: Colors.white),
+                          ),
+                        ),
+                        PopupMenuItem(
+                          value: 'delete',
+                          child: Text(
+                            'Delete',
+                            style: TextStyle(color: Colors.white),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
     );
   }
 }

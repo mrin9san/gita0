@@ -69,7 +69,7 @@ class _RenewSubscriptionPageState extends State<RenewSubscriptionPage> {
       final List<dynamic> data = await client
           .from('Fire')
           .select('EmailID, Phone')
-          .eq('FireBaseID', widget.fireBaseId!)
+          .eq('AuthUserID', widget.fireBaseId!)
           .limit(1);
       if (data.isNotEmpty) {
         final row = Map<String, dynamic>.from(data.first);
@@ -103,7 +103,7 @@ class _RenewSubscriptionPageState extends State<RenewSubscriptionPage> {
         data = await client
             .from('Gyms')
             .select('GymID, GymName, Location')
-            .eq('FireBaseID', widget.fireBaseId!);
+            .eq('AuthUserID', widget.fireBaseId!);
       } else {
         data = const [];
       }
@@ -170,7 +170,7 @@ class _RenewSubscriptionPageState extends State<RenewSubscriptionPage> {
         final client = supa.Supabase.instance.client;
         await client.from('Payments').insert({
           'GymID': _selectedGymId,
-          'FireBaseID': widget.fireBaseId,
+          'AuthUserID': widget.fireBaseId,
           'Plan': _selectedPlan,
           'AmountPaise': _planPricePaise[_selectedPlan],
           'Months': _planDurationMonths[_selectedPlan],
@@ -213,7 +213,7 @@ class _RenewSubscriptionPageState extends State<RenewSubscriptionPage> {
         final client = supa.Supabase.instance.client;
         await client.from('Payments').insert({
           'GymID': _selectedGymId,
-          'FireBaseID': widget.fireBaseId,
+          'AuthUserID': widget.fireBaseId,
           'Plan': _selectedPlan,
           'AmountPaise': _planPricePaise[_selectedPlan],
           'Months': _planDurationMonths[_selectedPlan],

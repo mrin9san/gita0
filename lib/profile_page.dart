@@ -58,16 +58,16 @@ class _ProfilePageState extends State<ProfilePage> {
       if (_fireBaseId != null && _fireBaseId!.isNotEmpty) {
         row = await client
             .from('Fire')
-            .select('FireBaseID, Name, Location, EmailID, PhotoURL')
-            .eq('FireBaseID', _fireBaseId!)
+            .select('AuthUserID, Name, Location, EmailID, PhotoURL')
+            .eq('AuthUserID', _fireBaseId!)
             .maybeSingle();
       } else if (email.isNotEmpty) {
         row = await client
             .from('Fire')
-            .select('FireBaseID, Name, Location, EmailID, PhotoURL')
+            .select('AuthUserID, Name, Location, EmailID, PhotoURL')
             .eq('EmailID', email)
             .maybeSingle();
-        if (row != null) _fireBaseId = row['FireBaseID'] as String?;
+        if (row != null) _fireBaseId = row['AuthUserID'] as String?;
       }
 
       final md = _user!.userMetadata ?? {};
@@ -127,7 +127,7 @@ class _ProfilePageState extends State<ProfilePage> {
       final latest = await client
           .from('Payments')
           .select('created_at, Months, Plan, Status')
-          .eq('FireBaseID', _fireBaseId!)
+          .eq('AuthUserID', _fireBaseId!)
           .eq('Status', 'success')
           .order('created_at', ascending: false)
           .limit(1)
@@ -305,7 +305,7 @@ class _ProfilePageState extends State<ProfilePage> {
       await client
           .from('Fire')
           .update(updateMap)
-          .eq('FireBaseID', _fireBaseId!);
+          .eq('AuthUserID', _fireBaseId!);
 
       if (mounted) {
         setState(() {

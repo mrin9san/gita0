@@ -1,3 +1,4 @@
+// lib/home_page.dart
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' as supa;
@@ -144,8 +145,8 @@ class _HomePageState extends State<HomePage> {
   Future<List<Map<String, dynamic>>> _fetchRemoteGyms() async {
     final rows = await _client
         .from('Gyms')
-        .select('GymID,GymName,Location,Capacity,FireBaseID,created_at')
-        .eq('FireBaseID', widget.fireBaseId)
+        .select('GymID,GymName,Location,Capacity,AuthUserID,created_at')
+        .eq('AuthUserID', widget.fireBaseId)
         .order('created_at', ascending: true);
 
     return (rows as List)
@@ -191,7 +192,7 @@ class _HomePageState extends State<HomePage> {
               'GymName': g['name'] ?? '',
               'Location': g['location'] ?? '',
               'Capacity': g['capacity'] ?? 0,
-              'FireBaseID': widget.fireBaseId,
+              'AuthUserID': widget.fireBaseId,
             })
             .select('GymID')
             .single();
@@ -278,6 +279,29 @@ class _HomePageState extends State<HomePage> {
     if (fromAvatar is String && fromAvatar.isNotEmpty) return fromAvatar;
     if (fromPicture is String && fromPicture.isNotEmpty) return fromPicture;
     return null;
+  }
+
+  // ------------------------------------------------------------------
+  // MEMBERSHIP OPTIONS (Packages) — plumb this into your Add-Customer form
+  // ------------------------------------------------------------------
+
+  /// Returns a Future with active packages for this user, ordered with defaults first.
+  Future<List<PackageOption>> _packagesFuture() {
+    return PackagesRepo(_client).fetchActiveForUser(widget.fireBaseId);
+  }
+
+  void _openAddCustomer() {
+    final packagesFuture = _packagesFuture();
+    // Replace `showAddCustomerDialog` with your real function/screen.
+    // It just needs to accept `packagesFuture` and inside that form use a
+    // FutureBuilder to render Dropdown items from the fetched packages.
+    //
+    // showAddCustomerDialog(
+    //   context: context,
+    //   client: _client,
+    //   fireBaseId: widget.fireBaseId,
+    //   packagesFuture: packagesFuture, // <-- NEW
+    // );
   }
 
   @override
@@ -451,5 +475,52 @@ class _HomePageState extends State<HomePage> {
 
       bottomNavigationBar: const GlassFooterBar(),
     );
+  }
+}
+
+// ------------------------------------------------------------------
+// Model + Repo for membership package options
+// ------------------------------------------------------------------
+
+class PackageOption {
+  final String id;
+  final String name;
+  final num price;
+
+  PackageOption({required this.id, required this.name, required this.price});
+}
+
+class PackagesRepo {
+  final supa.SupabaseClient client;
+  PackagesRepo(this.client);
+
+  /// Returns active packages for a given user (AuthUserID),
+  /// defaults first, then by created_at.
+  Future<List<PackageOption>> fetchActiveForUser(String authUserId) async {
+    final rows = await client
+        .from('Packages')
+        .select(
+          'PackageID, Name, Price, IsActive, AuthUserID, IsDefault, created_at',
+        )
+        .eq('AuthUserID', authUserId)
+        .eq('IsActive', true)
+        .order('IsDefault', ascending: false)
+        .order('created_at', ascending: true);
+
+    final list = (rows as List)
+        .map<Map<String, dynamic>>((r) => Map<String, dynamic>.from(r as Map))
+        .toList();
+
+    return list
+        .map(
+          (r) => PackageOption(
+            id: (r['PackageID'] ?? '').toString(),
+            name: (r['Name'] ?? '').toString(),
+            price: (r['Price'] is num)
+                ? r['Price'] as num
+                : num.tryParse('${r['Price']}') ?? 0,
+          ),
+        )
+        .toList();
   }
 }

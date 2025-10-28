@@ -146,7 +146,7 @@ class _TrainerRosterPageState extends State<TrainerRosterPage> {
       final tRows = await _client
           .from('Trainer')
           .select('TrainerID, Name')
-          .eq('FirebaseID', widget.fireBaseId);
+          .eq('AuthUserID', widget.fireBaseId);
 
       final tgRows = await _client
           .from('TrainerGyms')
@@ -182,7 +182,7 @@ class _TrainerRosterPageState extends State<TrainerRosterPage> {
           .select(
             'Date, StartTime, EndTime, PrimaryTrainerIDs, BackupTrainerID, Notes',
           )
-          .eq('FireBaseID', widget.fireBaseId)
+          .eq('AuthUserID', widget.fireBaseId)
           .eq('GymID', _selectedGymId)
           .gte('Date', startStr)
           .lte('Date', endStr);
@@ -249,7 +249,7 @@ class _TrainerRosterPageState extends State<TrainerRosterPage> {
       await _client
           .from('TrainerRoster')
           .delete()
-          .eq('FireBaseID', widget.fireBaseId)
+          .eq('AuthUserID', widget.fireBaseId)
           .eq('GymID', _selectedGymId)
           .gte('Date', start)
           .lte('Date', end);
@@ -265,7 +265,7 @@ class _TrainerRosterPageState extends State<TrainerRosterPage> {
           if (slot.primaryTrainerIds.isEmpty) continue;
 
           rows.add({
-            'FireBaseID': widget.fireBaseId,
+            'AuthUserID': widget.fireBaseId,
             'GymID': _selectedGymId,
             'Date': dateStr,
             'StartTime': slot.start,
